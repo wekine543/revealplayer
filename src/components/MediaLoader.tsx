@@ -146,7 +146,7 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
           </p>
           <button
             onClick={() => fileRef.current?.click()}
-            className="w-full text-xs py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+            className="w-full text-xs py-2 sm:py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
           >
             Replace
           </button>
@@ -163,13 +163,16 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
             onChange={(e) => setUrlInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleUrl()}
             placeholder="https://..."
-            className="w-full text-sm px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-brand-400"
+            inputMode="url"
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="w-full text-sm px-2 py-2 sm:py-1.5 rounded-md bg-black/30 border border-white/10 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-brand-400"
             autoFocus
           />
           <div className="flex gap-2">
             <button
               onClick={handleUrl}
-              className="flex-1 text-xs py-1.5 rounded-md bg-brand-500/20 hover:bg-brand-500/30 text-brand-300 transition-colors"
+              className="flex-1 text-xs py-2 sm:py-1.5 rounded-md bg-brand-500/20 hover:bg-brand-500/30 text-brand-300 transition-colors"
             >
               Load
             </button>
@@ -179,23 +182,23 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
                 setUrlInput('')
                 setError('')
               }}
-              className="flex-1 text-xs py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
+              className="flex-1 text-xs py-2 sm:py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
             >
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="h-24 flex flex-col items-center justify-center gap-2">
+        <div className="h-24 flex flex-col items-center justify-center gap-2.5 sm:gap-2">
           <button
             onClick={() => fileRef.current?.click()}
-            className="text-xs px-3 py-2 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+            className="text-xs px-4 py-2.5 sm:px-3 sm:py-2 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
           >
             Browse File
           </button>
           <button
             onClick={() => setShowUrlInput(true)}
-            className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            className="text-xs text-gray-500 hover:text-gray-300 transition-colors py-1"
           >
             or enter URL
           </button>

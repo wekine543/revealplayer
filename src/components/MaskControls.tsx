@@ -55,10 +55,10 @@ export function MaskControls() {
         <span className="text-xs text-gray-400">Border</span>
         <button
           onClick={() => setMask({ borderEnabled: !mask.borderEnabled })}
-          className={`relative w-9 h-5 rounded-full transition-colors ${mask.borderEnabled ? 'bg-brand-500' : 'bg-white/10'}`}
+          className={`relative w-11 h-6 sm:w-9 sm:h-5 rounded-full transition-colors ${mask.borderEnabled ? 'bg-brand-500' : 'bg-white/10'}`}
         >
           <span
-            className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-all duration-200 ${mask.borderEnabled ? 'translate-x-4' : 'translate-x-0'}`}
+            className={`absolute top-0.5 left-0.5 w-5 h-5 sm:w-4 sm:h-4 rounded-full bg-white transition-all duration-200 ${mask.borderEnabled ? 'translate-x-5 sm:translate-x-4' : 'translate-x-0'}`}
           />
         </button>
       </div>
@@ -92,14 +92,14 @@ export function MaskControls() {
                 type="color"
                 value={mask.borderColor}
                 onChange={(e) => setMask({ borderColor: e.target.value })}
-                className="w-8 h-8 rounded-md bg-transparent border border-white/10 cursor-pointer"
+                className="w-9 h-9 sm:w-8 sm:h-8 rounded-md bg-transparent border border-white/10 cursor-pointer"
               />
-              <div className="flex gap-1">
+              <div className="flex gap-1.5 sm:gap-1">
                 {['#ffffff', '#000000', '#ff4444', '#44ff44', '#4488ff', '#ffdd44'].map((c) => (
                   <button
                     key={c}
                     onClick={() => setMask({ borderColor: c })}
-                    className="w-5 h-5 rounded-full border border-white/20"
+                    className="w-7 h-7 sm:w-5 sm:h-5 rounded-full border border-white/20"
                     style={{ backgroundColor: c }}
                   />
                 ))}
@@ -128,7 +128,8 @@ export function MaskControls() {
 
       {/* Tip */}
       <p className="text-xs text-gray-600 pt-1">
-        Tip: scroll on the canvas to adjust mask radius
+        <span className="hidden sm:inline">Tip: scroll on the canvas to adjust mask radius</span>
+        <span className="sm:hidden">Tip: drag the Radius slider to resize the mask</span>
       </p>
     </div>
   )

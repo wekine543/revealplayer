@@ -76,9 +76,20 @@ export function CanvasView() {
     engine.setMouseInactive()
   }
 
-  // Touch support
+  // Touch support — a single finger acts as the "mouse" so the mask follows it
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return
+    const touch = e.touches[0]
+    engine.setMouseFromEvent(touch.clientX, touch.clientY)
+  }
+
   const handleTouchMove = (e: React.TouchEvent) => {
     if (e.touches.length === 0) return
+    // Only track a single finger; ignore pinch gestures
+    if (e.touches.length > 1) {
+      engine.setMouseInactive()
+      return
+    }
     const touch = e.touches[0]
     engine.setMouseFromEvent(touch.clientX, touch.clientY)
   }
@@ -87,7 +98,7 @@ export function CanvasView() {
     engine.setMouseInactive()
   }
 
-  // Wheel to adjust radius
+  // Wheel to adjust radius (desktop)
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault()
     const delta = e.deltaY > 0 ? -0.01 : 0.01
@@ -112,25 +123,27 @@ export function CanvasView() {
   }, [setIsPlaying])
 
   return (
-    <div className="relative w-full bg-black rounded-xl overflow-hidden shadow-2xl" style={{ aspectRatio: '16 / 9' }}>
+    <div className="relative w-full bg-black rounded-lg sm:rounded-xl overflow-hidden shadow-2xl aspect-[4/3] sm:aspect-video">
       <canvas
         ref={canvasRef}
-        className="absolute inset-0 w-full h-full cursor-crosshair"
+        className="absolute inset-0 w-full h-full cursor-crosshair touch-none select-none"
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
+        onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onWheel={handleWheel}
       />
       {/* Placeholder when no media A */}
       {!mediaA && (
-        <div className="absolute inset-0 flex items-center justify-center text-gray-500 pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center text-gray-500 pointer-events-none px-4">
           <div className="text-center">
-            <svg className="w-16 h-16 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-10 h-10 sm:w-16 sm:h-16 mx-auto mb-2 sm:mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
-            <p className="text-sm">Load media A and B to begin</p>
-            <p className="text-xs mt-1 opacity-60">Move mouse on canvas to reveal B through A</p>
+            <p className="text-xs sm:text-sm">Load media A and B to begin</p>
+            <p className="text-[10px] sm:text-xs mt-1 opacity-60 hidden sm:block">Move mouse on canvas to reveal B through A</p>
+            <p className="text-[10px] sm:text-xs mt-1 opacity-60 sm:hidden">Touch &amp; drag on canvas to reveal B through A</p>
           </div>
         </div>
       )}

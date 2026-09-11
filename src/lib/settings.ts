@@ -38,10 +38,20 @@ const defaults: PersistedSettings = {
   favoritesCollapsed: false,
 }
 
+/** True on phone/tablet-sized viewports */
+function isMobileViewport(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false
+  return window.matchMedia('(max-width: 1023px)').matches
+}
+
 export function loadSettings(): PersistedSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return defaults
+    if (!raw) {
+      // First run — collapse the side panel by default on small screens
+      // so the canvas gets maximum room.
+      return { ...defaults, sidebarCollapsed: isMobileViewport() }
+    }
     const parsed = JSON.parse(raw) as Partial<PersistedSettings>
     // Deep-merge maskSettings so new fields added in updates get defaults
     return {
