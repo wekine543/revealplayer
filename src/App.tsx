@@ -1,9 +1,11 @@
+import { useEffect, useState } from 'react'
 import { CanvasView } from './components/CanvasView'
 import { MediaLoader } from './components/MediaLoader'
 import { PlaybackControls } from './components/PlaybackControls'
 import { MaskControls } from './components/MaskControls'
 import { FavoriteButton } from './components/FavoriteButton'
 import { FavoriteList } from './components/FavoriteList'
+import { engine } from './lib/engine'
 import { useStore } from './store/useStore'
 
 /** Collapsible section — controlled by store for persistence */
@@ -43,6 +45,13 @@ export default function App() {
   const swapMedia = useStore((s) => s.swapMedia)
   const mediaA = useStore((s) => s.mediaA)
   const mediaB = useStore((s) => s.mediaB)
+
+  // True on phones/tablets, where the engine caps its render resolution.
+  // Read after mount so CanvasView has had a chance to initialise the engine.
+  const [lowPower, setLowPower] = useState(false)
+  useEffect(() => {
+    setLowPower(engine.lowPowerMode)
+  }, [])
 
   // Persisted UI state
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
@@ -85,14 +94,15 @@ export default function App() {
       </header>
 
       {/* Main content — stacks vertically on mobile, side-by-side on desktop */}
-      <main className="flex-1 flex flex-col lg:flex-row gap-3 lg:gap-4 p-2.5 sm:p-4 max-w-7xl mx-auto w-full">
+      <main className="flex-1 flex flex-col lg:flex-row gap-2.5 lg:gap-4 p-2.5 sm:p-4 max-w-7xl mx-auto w-full">
         {/* Primary: Canvas + Controls */}
-        <div className="flex-1 flex flex-col gap-3 min-w-0">
+        <div className="flex-1 flex flex-col gap-2.5 sm:gap-3 min-w-0">
           <CanvasView />
           <PlaybackControls />
 
-          {/* Media loaders — single column on mobile, side by side on larger screens */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Media loaders — kept on one row at every width so they take as
+              little vertical space as possible and the canvas gets the rest */}
+          <div className="grid grid-cols-2 gap-2 sm:gap-3">
             <MediaLoader slot="A" />
             <MediaLoader slot="B" />
           </div>
@@ -102,7 +112,7 @@ export default function App() {
             <button
               onClick={swapMedia}
               disabled={!mediaA || !mediaB}
-              className="flex items-center gap-1.5 text-xs px-4 py-2.5 sm:py-2 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center gap-1.5 text-xs px-4 py-1.5 sm:py-2 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m4 4H8m0 0l4-4m-4 4l4 4" />
@@ -146,6 +156,11 @@ export default function App() {
             Tap &amp; drag the canvas to reveal Media B · Use the slider to adjust the mask
           </span>
         </p>
+        {lowPower && (
+          <p className="text-[10px] text-gray-700 text-center mt-0.5">
+            Mobile power saving on · render capped to 1.5× DPR / 720p
+          </p>
+        )}
       </footer>
     </div>
   )

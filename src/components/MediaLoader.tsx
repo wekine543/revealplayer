@@ -86,7 +86,7 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
 
   return (
     <div
-      className={`relative rounded-lg border-2 border-dashed p-3 transition-colors ${isDragging ? 'border-brand-400 bg-brand-500/20' : `${borderColor} ${bgColor}`}`}
+      className={`relative rounded-lg border-2 border-dashed p-2 sm:p-3 transition-colors ${isDragging ? 'border-brand-400 bg-brand-500/20' : `${borderColor} ${bgColor}`}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -103,12 +103,12 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
         }}
       />
 
-      <div className="flex items-center justify-between mb-2">
-        <span className={`text-sm font-bold ${labelColor}`}>Media {slot}</span>
+      <div className="flex items-center justify-between mb-1.5 sm:mb-2 gap-1">
+        <span className={`text-xs sm:text-sm font-bold truncate ${labelColor}`}>Media {slot}</span>
         {media && (
           <button
             onClick={removeMedia}
-            className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+            className="text-[10px] sm:text-xs text-gray-500 hover:text-red-400 transition-colors flex-shrink-0"
           >
             Remove
           </button>
@@ -116,9 +116,9 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
       </div>
 
       {media ? (
-        <div className="space-y-2">
+        <div className="space-y-1.5 sm:space-y-2">
           {/* Thumbnail */}
-          <div className="relative w-full h-24 rounded-md overflow-hidden bg-black/30 flex items-center justify-center">
+          <div className="relative w-full h-16 sm:h-24 rounded-md overflow-hidden bg-black/30 flex items-center justify-center">
             {media.type === 'video' ? (
               <video
                 src={media.url}
@@ -133,30 +133,26 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
                 className="max-h-full max-w-full object-contain"
               />
             )}
-            <span className="absolute top-1 right-1 text-xs px-1.5 py-0.5 rounded bg-black/60 text-white">
-              {media.type}
+            <span className="absolute top-1 right-1 text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 rounded bg-black/60 text-white">
+              {media.width}×{media.height}
             </span>
           </div>
-          <p className="text-xs text-gray-400 truncate" title={media.fileName ?? media.url}>
+          <p className="text-[10px] sm:text-xs text-gray-400 truncate" title={media.fileName ?? media.url}>
             {media.fileName ?? media.url}
-          </p>
-          <p className="text-xs text-gray-500">
-            {media.width} x {media.height}
-            {media.duration ? ` · ${media.duration.toFixed(1)}s` : ''}
           </p>
           <button
             onClick={() => fileRef.current?.click()}
-            className="w-full text-xs py-2 sm:py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+            className="w-full text-[10px] sm:text-xs py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
           >
             Replace
           </button>
         </div>
       ) : loading ? (
-        <div className="h-24 flex items-center justify-center">
+        <div className="h-16 sm:h-24 flex items-center justify-center">
           <div className="animate-spin w-6 h-6 border-2 border-brand-400 border-t-transparent rounded-full" />
         </div>
       ) : showUrlInput ? (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <input
             type="text"
             value={urlInput}
@@ -166,13 +162,13 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
             inputMode="url"
             autoCapitalize="off"
             autoCorrect="off"
-            className="w-full text-sm px-2 py-2 sm:py-1.5 rounded-md bg-black/30 border border-white/10 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-brand-400"
+            className="w-full text-xs sm:text-sm px-2 py-1.5 rounded-md bg-black/30 border border-white/10 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-brand-400"
             autoFocus
           />
-          <div className="flex gap-2">
+          <div className="flex gap-1.5">
             <button
               onClick={handleUrl}
-              className="flex-1 text-xs py-2 sm:py-1.5 rounded-md bg-brand-500/20 hover:bg-brand-500/30 text-brand-300 transition-colors"
+              className="flex-1 text-[10px] sm:text-xs py-1.5 rounded-md bg-brand-500/20 hover:bg-brand-500/30 text-brand-300 transition-colors"
             >
               Load
             </button>
@@ -182,23 +178,23 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
                 setUrlInput('')
                 setError('')
               }}
-              className="flex-1 text-xs py-2 sm:py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
+              className="flex-1 text-[10px] sm:text-xs py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-400 transition-colors"
             >
               Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div className="h-24 flex flex-col items-center justify-center gap-2.5 sm:gap-2">
+        <div className="h-16 sm:h-24 flex flex-col items-center justify-center gap-1.5 sm:gap-2">
           <button
             onClick={() => fileRef.current?.click()}
-            className="text-xs px-4 py-2.5 sm:px-3 sm:py-2 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+            className="text-[10px] sm:text-xs px-3 sm:px-3 py-1.5 sm:py-2 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
           >
             Browse File
           </button>
           <button
             onClick={() => setShowUrlInput(true)}
-            className="text-xs text-gray-500 hover:text-gray-300 transition-colors py-1"
+            className="text-[10px] sm:text-xs text-gray-500 hover:text-gray-300 transition-colors"
           >
             or enter URL
           </button>
@@ -206,12 +202,12 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
       )}
 
       {error && (
-        <p className="text-xs text-red-400 mt-2 px-1">{error}</p>
+        <p className="text-[10px] sm:text-xs text-red-400 mt-1.5 px-1">{error}</p>
       )}
 
       {!media && !loading && !showUrlInput && (
-        <p className="text-xs text-gray-600 text-center mt-1">
-          Drag & drop or click
+        <p className="hidden sm:block text-xs text-gray-600 text-center mt-1">
+          Drag &amp; drop or click
         </p>
       )}
     </div>

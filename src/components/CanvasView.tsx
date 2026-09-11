@@ -122,8 +122,17 @@ export function CanvasView() {
     return () => clearInterval(interval)
   }, [setIsPlaying])
 
+  // The playback area adopts media A's own aspect ratio, so a portrait clip
+  // gets a portrait frame instead of sitting inside a wide letterbox.
+  // Falls back to 16:9 before anything is loaded.
+  const mediaAspect =
+    mediaA && mediaA.width > 0 && mediaA.height > 0 ? mediaA.width / mediaA.height : 16 / 9
+
   return (
-    <div className="relative w-full bg-black rounded-lg sm:rounded-xl overflow-hidden shadow-2xl aspect-[4/3] sm:aspect-video max-h-canvas">
+    <div
+      className="canvas-fit relative bg-black rounded-lg sm:rounded-xl overflow-hidden shadow-2xl"
+      style={{ '--ar': String(mediaAspect) } as React.CSSProperties}
+    >
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full cursor-crosshair touch-none select-none"

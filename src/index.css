@@ -61,38 +61,76 @@
 
   /*
    * Viewport-height helpers.
+   *
    * On mobile browsers `100vh` is the LARGE viewport (address bar hidden), so a
-   * min-h-screen layout gets clipped when the bar is visible. `dvh` tracks the
-   * visible area. The `vh` line first is a fallback for older browsers that
-   * don't understand `dvh` — they keep today's behaviour instead of breaking.
+   * min-h-screen layout gets clipped while the bar is visible. `dvh` tracks the
+   * visible area instead.
+   *
+   * The `vh` fallback lives in an `@supports` block rather than as a duplicate
+   * declaration further down the same rule: CSS minifiers drop the earlier of
+   * two declarations on one property once they judge the later one sufficient,
+   * which silently removed the fallback written that way.
    */
   .min-h-screen-safe {
     min-height: 100vh;
-    min-height: 100dvh;
+  }
+  @supports (height: 100dvh) {
+    .min-h-screen-safe {
+      min-height: 100dvh;
+    }
   }
 
   /*
-   * Cap the canvas height. In phone landscape the 16:9 canvas is wider than it
-   * is tall, so at full width it can exceed the viewport height. Capping it
-   * keeps the player on screen; the media is letterboxed inside by the shader
-   * so nothing is distorted.
+   * Playback canvas.
+   *
+   * It adopts the media's own aspect ratio (--ar, set inline from media A) and
+   * is bounded so the controls stay reachable.
+   *
+   * Capping the *width* at (cap x ratio) is what keeps the ratio honest. With
+   * only a max-height, a width:100% box would keep its full width while the
+   * height got clamped — the ratio would break and the media would sit in a
+   * wider letterbox. Capping the width shrinks both axes together, and because
+   * the height is derived from the width via aspect-ratio, that alone bounds
+   * the height too.
    */
-  .max-h-canvas {
-    max-height: 70vh;
-    max-height: 70dvh;
+  .canvas-fit {
+    width: 100%;
+    margin-inline: auto;
+    aspect-ratio: var(--ar, 1.7778);
+    /* Landscape phone: 56% of the visible height. */
+    max-width: calc(56vh * var(--ar, 1.7778));
+  }
+  @supports (height: 100dvh) {
+    .canvas-fit {
+      max-width: calc(56dvh * var(--ar, 1.7778));
+    }
+  }
+
+  @media (min-width: 640px) {
+    .canvas-fit {
+      max-width: calc(64vh * var(--ar, 1.7778));
+    }
+  }
+  @supports (height: 100dvh) {
+    @media (min-width: 640px) {
+      .canvas-fit {
+        max-width: calc(64dvh * var(--ar, 1.7778));
+      }
+    }
   }
 
   /*
    * ...but not in fullscreen, where the container should fill the screen.
-   * Both the max-height cap and the aspect ratio have to be released, otherwise
+   * Both the cap and the aspect ratio have to be released, otherwise
    * fullscreen would still show a small letterboxed box.
    */
-  .max-h-canvas:fullscreen,
-  .max-h-canvas:-webkit-full-screen {
+  .canvas-fit:fullscreen,
+  .canvas-fit:-webkit-full-screen {
     aspect-ratio: auto;
-    max-height: none;
+    max-width: none;
     width: 100%;
     height: 100%;
+    margin: 0;
   }
 
   /* Range slider styling */

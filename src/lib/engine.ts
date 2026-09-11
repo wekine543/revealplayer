@@ -38,6 +38,24 @@ class Engine {
   // Loop
   private _loopEnabled = false
 
+  // ---- Quality / performance ----
+  // Phones choke on high-resolution WebGL, and the cost grows with the video
+  // texture size. On mobile-class devices we cap the device pixel ratio, cap
+  // the drawing buffer to 720p, drop MSAA, and skip frames when nothing is
+  // moving — all of which cut GPU work and heat (heat causes throttling, which
+  // is what actually shows up as stutter).
+  private isMobileDevice = false
+  private qualityDpr = 2
+  private maxBufferW = Infinity
+  private maxBufferH = Infinity
+  /** Set whenever something visually changed, so the idle loop knows to draw. */
+  private dirty = true
+
+  /** True when the mobile render caps are in effect (useful for a UI hint). */
+  get lowPowerMode() {
+    return this.isMobileDevice
+  }
+
   // Callbacks
   onTimeUpdate: ((t: number) => void) | null = null
   onVideoEnded: (() => void) | null = null
@@ -45,9 +63,36 @@ class Engine {
   init(canvas: HTMLCanvasElement) {
     this.canvas = canvas
 
+    // Decide the quality tier once, at startup.
+    const coarsePointer =
+      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+    const smallScreen = Math.min(window.innerWidth, window.innerHeight) <= 900
+    const mobileUA = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent)
+    this.isMobileDevice = mobileUA || (coarsePointer && smallScreen)
+
+    if (this.isMobileDevice) {
+      this.qualityDpr = 1.5      // never render above 1.5x on mobile
+      this.maxBufferW = 1280     // ...and never above 720p
+      this.maxBufferH = 720
+    } else {
+      this.qualityDpr = 2
+      this.maxBufferW = Infinity
+      this.maxBufferH = Infinity
+    }
+
     // Renderer
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      // MSAA is expensive on mobile and buys little here: the mask edge, feather
+      // and border ring are all produced by smoothstep gradients in the shader.
+      antialias: !this.isMobileDevice,
+      // Only desktop keeps the drawing buffer. On mobile it forces the driver to
+      // copy every frame; captureScreenshot() renders synchronously right before
+      // reading, which works without it.
+      preserveDrawingBuffer: !this.isMobileDevice,
+      powerPreference: this.isMobileDevice ? 'default' : 'high-performance',
+    })
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.qualityDpr))
 
     // Scene & camera
     this.scene = new THREE.Scene()
@@ -109,10 +154,23 @@ class Engine {
     const w = this.canvas.clientWidth
     const h = this.canvas.clientHeight
     if (w === 0 || h === 0) return
+
+    // Effective pixel ratio: the device DPR capped by the quality ceiling, then
+    // reduced further so the drawing buffer stays within the resolution limit
+    // (1280x720 on mobile). Shading fewer pixels is the single biggest win when
+    // a large video is playing.
+    let dpr = Math.min(window.devicePixelRatio || 1, this.qualityDpr)
+    if (isFinite(this.maxBufferW)) dpr = Math.min(dpr, this.maxBufferW / w)
+    if (isFinite(this.maxBufferH)) dpr = Math.min(dpr, this.maxBufferH / h)
+    // Below ~0.5x the image turns to mush — not worth the frames.
+    dpr = Math.max(dpr, 0.5)
+
+    this.renderer.setPixelRatio(dpr)
     this.renderer.setSize(w, h, false)
     if (this.material) {
       this.material.uniforms.aspectRatio.value = w / h
     }
+    this.dirty = true
   }
 
   // ---- Texture management ----
@@ -154,6 +212,14 @@ class Engine {
       video.addEventListener('error', () => {
         console.error(`Video load error for slot ${slot}:`, video.error)
       })
+
+      // The first decoded frame arrives asynchronously, and the idle render loop
+      // may already have stopped by then — so redraw whenever new pixel data or
+      // a new seek position becomes available, otherwise the canvas would stay
+      // black until the user happened to press play.
+      video.addEventListener('loadeddata', () => { this.dirty = true })
+      video.addEventListener('seeked', () => { this.dirty = true })
+      video.addEventListener('playing', () => { this.dirty = true })
 
       // Set aspect ratio from MediaItem metadata (populated at load time)
       const aspect = (media.width > 0 && media.height > 0) ? media.width / media.height : 1
@@ -273,6 +339,7 @@ class Engine {
     if (!this.material) return
     this.material.uniforms.hasTexA.value = this.texA !== null
     this.material.uniforms.hasTexB.value = this.texB !== null
+    this.dirty = true
   }
 
   // ---- SyncManager ----
@@ -297,6 +364,8 @@ class Engine {
   async play() {
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
     const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
+    // Draw at least once immediately, even if playback takes a moment to start.
+    this.dirty = true
     if (vA && vB) {
       await this.sync.play()
     } else {
@@ -311,6 +380,8 @@ class Engine {
     const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
     if (vA) vA.pause()
     if (vB) vB.pause()
+    // Draw once more so the frozen frame is definitely the current one.
+    this.dirty = true
   }
 
   seek(time: number) {
@@ -323,6 +394,7 @@ class Engine {
       if (vB) vB.currentTime = time
     }
     this.onTimeUpdate?.(time)
+    this.dirty = true
   }
 
   setRate(rate: number) {
@@ -353,10 +425,12 @@ class Engine {
     const y = 1.0 - (clientY - rect.top) / rect.height
     this.mouseTarget.set(x, y)
     this.mouseActive = true
+    this.dirty = true
   }
 
   setMouseInactive() {
     this.mouseActive = false
+    this.dirty = true
   }
 
   // ---- Mask settings ----
@@ -377,6 +451,7 @@ class Engine {
     u.borderWidth.value = settings.borderWidth
     ;(u.borderColor.value as THREE.Color).set(settings.borderColor)
     u.borderOpacity.value = settings.borderOpacity
+    this.dirty = true
   }
 
   // ---- Render loop ----
@@ -397,8 +472,31 @@ class Engine {
     }
   }
 
+  /**
+   * Is there any reason to draw this frame?
+   *
+   * Drawing continuously while paused burns battery and heats the device, and
+   * heat is what makes a phone throttle and stutter. The canvas keeps showing
+   * its last frame, so skipping is invisible.
+   */
+  private needsFrame(): boolean {
+    // A playing video changes every frame.
+    const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
+    const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
+    if (vA && !vA.paused && !vA.ended) return true
+    if (vB && !vB.paused && !vB.ended) return true
+
+    // The mask is still easing toward the pointer.
+    if (this.mouseCurrent.distanceToSquared(this.mouseTarget) > 1e-7) return true
+
+    // Something changed: media, mask settings, resize, pointer enter/leave.
+    return this.dirty
+  }
+
   private render() {
     if (!this.renderer || !this.scene || !this.camera || !this.material) return
+    if (!this.needsFrame()) return
+    this.dirty = false
 
     // Lerp mouse for smooth following
     this.mouseCurrent.lerp(this.mouseTarget, 0.2)
@@ -425,7 +523,10 @@ class Engine {
 
   captureScreenshot(): string | null {
     if (!this.renderer || !this.canvas) return null
-    // Force a render to ensure the latest frame
+    // Force a fresh frame (the loop may be idle-skipping) and read it back in
+    // the same task, which works even on mobile where we don't keep the
+    // drawing buffer around.
+    this.dirty = true
     this.render()
     return this.canvas.toDataURL('image/png')
   }
