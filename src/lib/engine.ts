@@ -9,18 +9,56 @@ import type { MediaItem } from '../types'
 
 // ---- Render quality ceilings -------------------------------------------------
 // Single place to tune if a phone is still struggling.
-//
-// The dominant cost with large videos is uploading every decoded frame as a
-// texture. The output resolution matters too, and more than it first appears:
-// the fragment shader samples BOTH textures and runs the mask maths for each
-// pixel, so every extra pixel is paid for twice over. On a phone the softened
-// picture is a fair trade for smooth playback.
 const MOBILE_MAX_DPR = 1.5
-const MOBILE_MAX_BUFFER_W = 854   // 480p, wide edge
-const MOBILE_MAX_BUFFER_H = 480   // 480p, tall edge
+const MOBILE_MAX_BUFFER_W = 1280  // 720p, wide edge
+const MOBILE_MAX_BUFFER_H = 720   // 720p, tall edge
 const DESKTOP_MAX_DPR = 2
 /** Never scale below this or the picture turns to mush. */
 const MIN_DPR = 0.5
+
+/**
+ * Long-edge cap for a video texture.
+ *
+ * This is the lever that actually scales with the SOURCE resolution, which the
+ * output-resolution caps above do not touch. Using a <video> directly as a
+ * texture uploads one full-size image every frame: a 4K frame is ~33 MB, and at
+ * 30 fps that is ~1 GB/s of bus traffic, which is what stalls a phone. Scaling
+ * the frame into a canvas first so the upload is 720p-sized cuts that by ~9x.
+ *
+ * Sources already at or below the cap keep the direct video-texture path, so
+ * nothing regresses for small clips.
+ */
+const TEXTURE_MAX_LONG_EDGE = 1280
+
+/** Offscreen downscale target, used only when a video exceeds the cap above. */
+interface VideoScaler {
+  canvas: HTMLCanvasElement
+  ctx: CanvasRenderingContext2D
+}
+
+/**
+ * Build a downscale target for a video, or null when it is already small enough
+ * to upload directly.
+ */
+function createScaler(video: HTMLVideoElement): VideoScaler | null {
+  const srcW = video.videoWidth
+  const srcH = video.videoHeight
+  if (srcW <= 0 || srcH <= 0) return null
+
+  const longEdge = Math.max(srcW, srcH)
+  if (longEdge <= TEXTURE_MAX_LONG_EDGE) return null
+
+  const scale = TEXTURE_MAX_LONG_EDGE / longEdge
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(2, Math.round(srcW * scale))
+  canvas.height = Math.max(2, Math.round(srcH * scale))
+
+  // alpha:false is cheaper and lets the driver skip a blending path.
+  const ctx = canvas.getContext('2d', { alpha: false })
+  if (!ctx) return null
+
+  return { canvas, ctx }
+}
 
 class Engine {
   // Three.js
@@ -72,6 +110,12 @@ class Engine {
    */
   private uploadedTimeA = -1
   private uploadedTimeB = -1
+  /**
+   * Set only for oversized videos. When present, the decoded frame is scaled
+   * into this canvas and the canvas is uploaded instead of the raw video frame.
+   */
+  private scalerA: VideoScaler | null = null
+  private scalerB: VideoScaler | null = null
 
   /** True when the mobile render caps are in effect (useful for a UI hint). */
   get lowPowerMode() {
@@ -115,6 +159,14 @@ class Engine {
       powerPreference: this.isMobileDevice ? 'default' : 'high-performance',
     })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.qualityDpr))
+
+    // Worth having in the log when someone is chasing playback stutter.
+    console.info(
+      `[RevealPlayer] quality tier: ${this.isMobileDevice ? 'mobile' : 'desktop'} · ` +
+        `max DPR ${this.qualityDpr} · ` +
+        `buffer cap ${isFinite(this.maxBufferW) ? `${this.maxBufferW}x${this.maxBufferH}` : 'unlimited'} · ` +
+        `texture cap ${TEXTURE_MAX_LONG_EDGE}px`,
+    )
 
     // Scene & camera
     this.scene = new THREE.Scene()
@@ -179,8 +231,9 @@ class Engine {
 
     // Effective pixel ratio: the device DPR capped by the quality ceiling, then
     // reduced further so the drawing buffer stays within the resolution limit
-    // (480p on mobile). Shading fewer pixels is the single biggest win when a
-    // large video is playing.
+    // (720p on mobile). Shading fewer pixels helps, but note this only bounds
+    // the OUTPUT — the per-frame video upload is bounded separately, by
+    // TEXTURE_MAX_LONG_EDGE.
     let dpr = Math.min(window.devicePixelRatio || 1, this.qualityDpr)
     if (isFinite(this.maxBufferW)) dpr = Math.min(dpr, this.maxBufferW / w)
     if (isFinite(this.maxBufferH)) dpr = Math.min(dpr, this.maxBufferH / h)
@@ -250,19 +303,6 @@ class Engine {
         this.material.uniforms.mediaAspectB.value = aspect
       }
 
-      // Fallback: read actual video dimensions after metadata loads
-      video.addEventListener('loadedmetadata', () => {
-        if (!this.material) return
-        if (video.videoWidth > 0 && video.videoHeight > 0) {
-          const a = video.videoWidth / video.videoHeight
-          if (slot === 'A') {
-            this.material!.uniforms.mediaAspectA.value = a
-          } else {
-            this.material!.uniforms.mediaAspectB.value = a
-          }
-        }
-      })
-
       const texture = new THREE.VideoTexture(video)
       texture.minFilter = THREE.LinearFilter
       texture.magFilter = THREE.LinearFilter
@@ -277,6 +317,14 @@ class Engine {
         this.texB = texture
         this.material.uniforms.texB.value = texture
       }
+
+      // Once the real dimensions are known, confirm the aspect ratio and — for
+      // an oversized clip — switch to the downscaling upload path.
+      const onMeta = () => this.applyVideoMeta(slot, video)
+      video.addEventListener('loadedmetadata', onMeta)
+      // A cached clip may already have metadata, in which case the event never
+      // fires and the downscale path would never be set up.
+      if (video.readyState >= 1) onMeta()
     } else {
       const loader = new THREE.TextureLoader()
       loader.setCrossOrigin('anonymous')
@@ -322,6 +370,66 @@ class Engine {
     }
   }
 
+  /**
+   * Called once a video's dimensions are known.
+   *
+   * Confirms the aspect ratio, and for a clip larger than TEXTURE_MAX_LONG_EDGE
+   * swaps the direct video texture for a CanvasTexture that receives a
+   * scaled-down copy of each frame. Uploading raw frames is the cost that grows
+   * with the source resolution, so this is where large clips are tamed.
+   */
+  private applyVideoMeta(slot: 'A' | 'B', video: HTMLVideoElement) {
+    if (!this.material) return
+
+    const vw = video.videoWidth
+    const vh = video.videoHeight
+    if (vw > 0 && vh > 0) {
+      const a = vw / vh
+      if (slot === 'A') this.material.uniforms.mediaAspectA.value = a
+      else this.material.uniforms.mediaAspectB.value = a
+    }
+
+    // Already small enough — keep uploading the video frame directly.
+    const scaler = createScaler(video)
+    if (!scaler) return
+
+    const tex = new THREE.CanvasTexture(scaler.canvas)
+    tex.minFilter = THREE.LinearFilter
+    tex.magFilter = THREE.LinearFilter
+    // Deliberately NOT SRGBColorSpace.
+    //
+    // The fragment shader is a raw ShaderMaterial that writes gl_FragColor
+    // directly, so Three.js never appends its output sRGB conversion. Marking a
+    // texture as sRGB makes the GPU linearise it on sample, and those linear
+    // values then reach the framebuffer unconverted — the picture comes out
+    // visibly dark (measured ~75 average luma vs ~119 for the video path).
+    // A plain video texture is effectively not linearised, so matching that
+    // keeps the scaled path looking identical to the direct one.
+    tex.colorSpace = THREE.NoColorSpace
+
+    if (slot === 'A') {
+      if (this.texA) this.texA.dispose()
+      this.texA = tex
+      this.scalerA = scaler
+      this.material.uniforms.texA.value = tex
+      // Forget the previous upload position so the first scaled frame is drawn.
+      this.uploadedTimeA = -1
+    } else {
+      if (this.texB) this.texB.dispose()
+      this.texB = tex
+      this.scalerB = scaler
+      this.material.uniforms.texB.value = tex
+      this.uploadedTimeB = -1
+    }
+
+    console.info(
+      `[RevealPlayer] media ${slot}: ${vw}x${vh} source — ` +
+        `scaled to ${scaler.canvas.width}x${scaler.canvas.height} before texture upload ` +
+        `(${Math.round((1 - (scaler.canvas.width * scaler.canvas.height) / (vw * vh)) * 100)}% less per frame)`,
+    )
+    this.dirty = true
+  }
+
   private disposeTexture(slot: 'A' | 'B') {
     if (slot === 'A') {
       if (this.elA instanceof HTMLVideoElement) {
@@ -337,6 +445,7 @@ class Engine {
       // Forget the uploaded frame position: a replacement video could legitimately
       // sit at the same currentTime, and we still need its first frame drawn.
       this.uploadedTimeA = -1
+      this.scalerA = null
       if (this.material) {
         this.material.uniforms.texA.value = null
         this.material.uniforms.mediaAspectA.value = 1
@@ -353,6 +462,7 @@ class Engine {
         this.texB = null
       }
       this.uploadedTimeB = -1
+      this.scalerB = null
       if (this.material) {
         this.material.uniforms.texB.value = null
         this.material.uniforms.mediaAspectB.value = 1
@@ -533,15 +643,28 @@ class Engine {
   /** Upload a slot's video texture, but only when its frame actually advanced. */
   private uploadVideoFrame(slot: 'A' | 'B') {
     const el = slot === 'A' ? this.elA : this.elB
+    if (!(el instanceof HTMLVideoElement)) return
+
     const tex = slot === 'A' ? this.texA : this.texB
-    if (!(tex instanceof THREE.VideoTexture) || !(el instanceof HTMLVideoElement)) return
+    if (!tex) return
 
     const t = el.currentTime
     if (t === (slot === 'A' ? this.uploadedTimeA : this.uploadedTimeB)) return
 
+    const scaler = slot === 'A' ? this.scalerA : this.scalerB
+    if (scaler && tex instanceof THREE.CanvasTexture) {
+      // No decoded pixels yet — leave the slot pending so the next tick retries.
+      if (el.readyState < 2) return
+      scaler.ctx.drawImage(el, 0, 0, scaler.canvas.width, scaler.canvas.height)
+      tex.needsUpdate = true
+    } else if (tex instanceof THREE.VideoTexture) {
+      tex.needsUpdate = true
+    } else {
+      return
+    }
+
     if (slot === 'A') this.uploadedTimeA = t
     else this.uploadedTimeB = t
-    tex.needsUpdate = true
   }
 
   private render() {
