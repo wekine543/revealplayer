@@ -183,7 +183,7 @@ export function PlaybackControls() {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-2.5 sm:gap-x-3 px-3 sm:px-4 py-2.5 bg-black/40 rounded-lg border border-white/5">
       {/* Transport group — play / time / progress (own row on mobile) */}
-      <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0 basis-full sm:basis-auto">
+      <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 min-w-0">
         {/* Play/Pause */}
         <button
           onClick={handlePlayPause}
