@@ -53,7 +53,7 @@ export default function App() {
   const setFavoritesCollapsed = useStore((s) => s.setFavoritesCollapsed)
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#0a0b0f] safe-x">
+    <div className="min-h-screen-safe flex flex-col bg-[#0a0b0f] safe-x">
       {/* Header */}
       <header className="flex items-center justify-between gap-2 px-3 sm:px-5 py-2.5 sm:py-3 border-b border-white/5">
         <div className="flex items-center gap-2 min-w-0">

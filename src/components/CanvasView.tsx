@@ -123,7 +123,7 @@ export function CanvasView() {
   }, [setIsPlaying])
 
   return (
-    <div className="relative w-full bg-black rounded-lg sm:rounded-xl overflow-hidden shadow-2xl aspect-[4/3] sm:aspect-video">
+    <div className="relative w-full bg-black rounded-lg sm:rounded-xl overflow-hidden shadow-2xl aspect-[4/3] sm:aspect-video max-h-canvas">
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full cursor-crosshair touch-none select-none"

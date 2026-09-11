@@ -59,6 +59,42 @@
     padding-right: env(safe-area-inset-right);
   }
 
+  /*
+   * Viewport-height helpers.
+   * On mobile browsers `100vh` is the LARGE viewport (address bar hidden), so a
+   * min-h-screen layout gets clipped when the bar is visible. `dvh` tracks the
+   * visible area. The `vh` line first is a fallback for older browsers that
+   * don't understand `dvh` — they keep today's behaviour instead of breaking.
+   */
+  .min-h-screen-safe {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  /*
+   * Cap the canvas height. In phone landscape the 16:9 canvas is wider than it
+   * is tall, so at full width it can exceed the viewport height. Capping it
+   * keeps the player on screen; the media is letterboxed inside by the shader
+   * so nothing is distorted.
+   */
+  .max-h-canvas {
+    max-height: 70vh;
+    max-height: 70dvh;
+  }
+
+  /*
+   * ...but not in fullscreen, where the container should fill the screen.
+   * Both the max-height cap and the aspect ratio have to be released, otherwise
+   * fullscreen would still show a small letterboxed box.
+   */
+  .max-h-canvas:fullscreen,
+  .max-h-canvas:-webkit-full-screen {
+    aspect-ratio: auto;
+    max-height: none;
+    width: 100%;
+    height: 100%;
+  }
+
   /* Range slider styling */
   input[type="range"] {
     -webkit-appearance: none;
