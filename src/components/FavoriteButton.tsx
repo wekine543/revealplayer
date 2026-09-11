@@ -50,10 +50,19 @@ export function FavoriteButton() {
     }
   }
 
+  const handleShowInput = () => {
+    // Default name to media A's filename (without extension)
+    const defaultName = mediaA?.fileName
+      ? mediaA.fileName.replace(/\.[^.]+$/, '')
+      : `Combo ${new Date().toLocaleString()}`
+    setName(defaultName)
+    setShowInput(true)
+  }
+
   if (!showInput) {
     return (
       <button
-        onClick={() => setShowInput(true)}
+        onClick={handleShowInput}
         disabled={!canSave}
         className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-brand-500/20 hover:bg-brand-500/30 text-brand-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
       >

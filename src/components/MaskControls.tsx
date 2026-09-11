@@ -13,8 +13,6 @@ export function MaskControls() {
 
   return (
     <div className="space-y-3">
-      <h3 className="text-xs font-bold text-gray-300 uppercase tracking-wide">Mask Settings</h3>
-
       {/* Radius */}
       <div>
         <label className="flex items-center justify-between text-xs text-gray-400 mb-1">
