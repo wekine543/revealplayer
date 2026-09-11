@@ -1,5 +1,9 @@
 import { create } from 'zustand'
 import type { MediaItem, MaskSettings, FavoriteItem } from '../types'
+import { loadSettings, saveSettings } from '../lib/settings'
+
+// Load persisted settings once at module level (before store creation)
+const persisted = loadSettings()
 
 interface AppState {
   // Media
@@ -25,6 +29,11 @@ interface AppState {
   // Favorites
   favorites: FavoriteItem[]
 
+  // UI state
+  sidebarCollapsed: boolean
+  maskCollapsed: boolean
+  favoritesCollapsed: boolean
+
   // Actions
   setMediaA: (m: MediaItem | null) => void
   setMediaB: (m: MediaItem | null) => void
@@ -40,15 +49,9 @@ interface AppState {
   setMouseActive: (v: boolean) => void
   setMousePos: (pos: { x: number; y: number }) => void
   setFavorites: (favs: FavoriteItem[]) => void
-}
-
-const defaultMask: MaskSettings = {
-  radius: 0.15,        // UV-space (0-1)
-  feather: 0.02,       // UV-space
-  borderEnabled: true,
-  borderWidth: 0.003,  // UV-space
-  borderColor: '#ffffff',
-  borderOpacity: 0.8,
+  setSidebarCollapsed: (v: boolean) => void
+  setMaskCollapsed: (v: boolean) => void
+  setFavoritesCollapsed: (v: boolean) => void
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -57,17 +60,23 @@ export const useStore = create<AppState>((set) => ({
   isPlaying: false,
   currentTime: 0,
   duration: 0,
-  volume: 1,
-  isMuted: true,
-  playbackRate: 1,
-  isLooping: false,
+  // Restore from persisted settings
+  volume: persisted.volume,
+  isMuted: persisted.isMuted,
+  playbackRate: persisted.playbackRate,
+  isLooping: persisted.isLooping,
 
-  maskSettings: { ...defaultMask },
+  maskSettings: { ...persisted.maskSettings },
 
   mouseActive: false,
   mousePos: { x: 0.5, y: 0.5 },
 
   favorites: [],
+
+  // UI state from persistence
+  sidebarCollapsed: persisted.sidebarCollapsed,
+  maskCollapsed: persisted.maskCollapsed,
+  favoritesCollapsed: persisted.favoritesCollapsed,
 
   setMediaA: (m) => set({ mediaA: m }),
   setMediaB: (m) => set({ mediaB: m }),
@@ -81,18 +90,51 @@ export const useStore = create<AppState>((set) => ({
   setIsPlaying: (v) => set({ isPlaying: v }),
   setCurrentTime: (v) => set({ currentTime: v }),
   setDuration: (v) => set({ duration: v }),
-  setVolume: (v) => set({ volume: v }),
-  setMuted: (v) => set({ isMuted: v }),
-  setPlaybackRate: (v) => set({ playbackRate: v }),
-  setLooping: (v) => set({ isLooping: v }),
+
+  setVolume: (v) => {
+    set({ volume: v })
+    saveSettings({ volume: v })
+  },
+
+  setMuted: (v) => {
+    set({ isMuted: v })
+    saveSettings({ isMuted: v })
+  },
+
+  setPlaybackRate: (v) => {
+    set({ playbackRate: v })
+    saveSettings({ playbackRate: v })
+  },
+
+  setLooping: (v) => {
+    set({ isLooping: v })
+    saveSettings({ isLooping: v })
+  },
 
   setMaskSettings: (partial) =>
-    set((state) => ({
-      maskSettings: { ...state.maskSettings, ...partial },
-    })),
+    set((state) => {
+      const newMask = { ...state.maskSettings, ...partial }
+      saveSettings({ maskSettings: newMask })
+      return { maskSettings: newMask }
+    }),
 
   setMouseActive: (v) => set({ mouseActive: v }),
   setMousePos: (pos) => set({ mousePos: pos }),
 
   setFavorites: (favs) => set({ favorites: favs }),
+
+  setSidebarCollapsed: (v) => {
+    set({ sidebarCollapsed: v })
+    saveSettings({ sidebarCollapsed: v })
+  },
+
+  setMaskCollapsed: (v) => {
+    set({ maskCollapsed: v })
+    saveSettings({ maskCollapsed: v })
+  },
+
+  setFavoritesCollapsed: (v) => {
+    set({ favoritesCollapsed: v })
+    saveSettings({ favoritesCollapsed: v })
+  },
 }))

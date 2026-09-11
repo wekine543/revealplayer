@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { CanvasView } from './components/CanvasView'
 import { MediaLoader } from './components/MediaLoader'
 import { PlaybackControls } from './components/PlaybackControls'
@@ -7,21 +6,22 @@ import { FavoriteButton } from './components/FavoriteButton'
 import { FavoriteList } from './components/FavoriteList'
 import { useStore } from './store/useStore'
 
-/** Collapsible section wrapper */
+/** Collapsible section — controlled by store for persistence */
 function CollapsibleSection({
   title,
-  defaultOpen = true,
+  open,
+  onToggle,
   children,
 }: {
   title: string
-  defaultOpen?: boolean
+  open: boolean
+  onToggle: () => void
   children: React.ReactNode
 }) {
-  const [open, setOpen] = useState(defaultOpen)
   return (
     <div className="rounded-xl bg-white/5 border border-white/5 overflow-hidden">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={onToggle}
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
       >
         <h3 className="text-xs font-bold text-gray-300 uppercase tracking-wide">{title}</h3>
@@ -40,10 +40,17 @@ function CollapsibleSection({
 }
 
 export default function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
   const swapMedia = useStore((s) => s.swapMedia)
   const mediaA = useStore((s) => s.mediaA)
   const mediaB = useStore((s) => s.mediaB)
+
+  // Persisted UI state
+  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
+  const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed)
+  const maskCollapsed = useStore((s) => s.maskCollapsed)
+  const setMaskCollapsed = useStore((s) => s.setMaskCollapsed)
+  const favoritesCollapsed = useStore((s) => s.favoritesCollapsed)
+  const setFavoritesCollapsed = useStore((s) => s.setFavoritesCollapsed)
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0a0b0f]">
@@ -65,14 +72,14 @@ export default function App() {
           <FavoriteButton />
           {/* Sidebar toggle */}
           <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
-            title={sidebarOpen ? 'Hide panel' : 'Show panel'}
+            title={sidebarCollapsed ? 'Show panel' : 'Hide panel'}
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
-            {sidebarOpen ? 'Hide Panel' : 'Show Panel'}
+            {sidebarCollapsed ? 'Show Panel' : 'Hide Panel'}
           </button>
         </div>
       </header>
@@ -106,15 +113,23 @@ export default function App() {
         </div>
 
         {/* Right: Collapsible sidebar */}
-        {sidebarOpen && (
+        {!sidebarCollapsed && (
           <div className="w-64 flex flex-col gap-3 flex-shrink-0">
             {/* Mask Controls — collapsible */}
-            <CollapsibleSection title="Mask Settings">
+            <CollapsibleSection
+              title="Mask Settings"
+              open={!maskCollapsed}
+              onToggle={() => setMaskCollapsed(!maskCollapsed)}
+            >
               <MaskControls />
             </CollapsibleSection>
 
             {/* Favorites — collapsible */}
-            <CollapsibleSection title="Saved Combos" defaultOpen={true}>
+            <CollapsibleSection
+              title="Saved Combos"
+              open={!favoritesCollapsed}
+              onToggle={() => setFavoritesCollapsed(!favoritesCollapsed)}
+            >
               <FavoriteList />
             </CollapsibleSection>
           </div>

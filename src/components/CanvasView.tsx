@@ -18,6 +18,12 @@ export function CanvasView() {
     engine.onTimeUpdate = (t) => setCurrentTime(t)
     engine.onVideoEnded = () => setIsPlaying(false)
 
+    // Restore persisted settings to engine
+    const state = useStore.getState()
+    engine.setLoop(state.isLooping)
+    engine.setRate(state.playbackRate)
+    engine.updateMaskUniforms(state.maskSettings)
+
     const handleResize = () => engine.resize()
     window.addEventListener('resize', handleResize)
 
@@ -37,12 +43,15 @@ export function CanvasView() {
   // Sync media A changes to engine
   useEffect(() => {
     engine.setMedia('A', mediaA)
+    // Apply persisted playback rate to new video element
+    engine.setRate(useStore.getState().playbackRate)
     setIsPlaying(false)
   }, [mediaA, setIsPlaying])
 
   // Sync media B changes to engine
   useEffect(() => {
     engine.setMedia('B', mediaB)
+    engine.setRate(useStore.getState().playbackRate)
     setIsPlaying(false)
   }, [mediaB, setIsPlaying])
 
