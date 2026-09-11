@@ -158,7 +158,7 @@ export default function App() {
         </p>
         {lowPower && (
           <p className="text-[10px] text-gray-700 text-center mt-0.5">
-            Mobile power saving on · render capped to 1.5× DPR / 720p
+            Mobile power saving on · render capped to 1.5× DPR / 480p
           </p>
         )}
       </footer>

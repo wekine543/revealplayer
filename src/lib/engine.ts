@@ -7,6 +7,21 @@ import { SyncManager } from './SyncManager'
 import { vertexShader, fragmentShader } from './shaders'
 import type { MediaItem } from '../types'
 
+// ---- Render quality ceilings -------------------------------------------------
+// Single place to tune if a phone is still struggling.
+//
+// The dominant cost with large videos is uploading every decoded frame as a
+// texture. The output resolution matters too, and more than it first appears:
+// the fragment shader samples BOTH textures and runs the mask maths for each
+// pixel, so every extra pixel is paid for twice over. On a phone the softened
+// picture is a fair trade for smooth playback.
+const MOBILE_MAX_DPR = 1.5
+const MOBILE_MAX_BUFFER_W = 854   // 480p, wide edge
+const MOBILE_MAX_BUFFER_H = 480   // 480p, tall edge
+const DESKTOP_MAX_DPR = 2
+/** Never scale below this or the picture turns to mush. */
+const MIN_DPR = 0.5
+
 class Engine {
   // Three.js
   renderer: THREE.WebGLRenderer | null = null
@@ -45,11 +60,18 @@ class Engine {
   // moving — all of which cut GPU work and heat (heat causes throttling, which
   // is what actually shows up as stutter).
   private isMobileDevice = false
-  private qualityDpr = 2
+  private qualityDpr = DESKTOP_MAX_DPR
   private maxBufferW = Infinity
   private maxBufferH = Infinity
   /** Set whenever something visually changed, so the idle loop knows to draw. */
   private dirty = true
+  /**
+   * currentTime of the last video frame uploaded per slot. Video frames arrive
+   * at the source's frame rate, which is usually lower than the display's, so
+   * this lets us skip re-uploading and re-drawing identical frames.
+   */
+  private uploadedTimeA = -1
+  private uploadedTimeB = -1
 
   /** True when the mobile render caps are in effect (useful for a UI hint). */
   get lowPowerMode() {
@@ -71,11 +93,11 @@ class Engine {
     this.isMobileDevice = mobileUA || (coarsePointer && smallScreen)
 
     if (this.isMobileDevice) {
-      this.qualityDpr = 1.5      // never render above 1.5x on mobile
-      this.maxBufferW = 1280     // ...and never above 720p
-      this.maxBufferH = 720
+      this.qualityDpr = MOBILE_MAX_DPR
+      this.maxBufferW = MOBILE_MAX_BUFFER_W
+      this.maxBufferH = MOBILE_MAX_BUFFER_H
     } else {
-      this.qualityDpr = 2
+      this.qualityDpr = DESKTOP_MAX_DPR
       this.maxBufferW = Infinity
       this.maxBufferH = Infinity
     }
@@ -157,13 +179,12 @@ class Engine {
 
     // Effective pixel ratio: the device DPR capped by the quality ceiling, then
     // reduced further so the drawing buffer stays within the resolution limit
-    // (1280x720 on mobile). Shading fewer pixels is the single biggest win when
-    // a large video is playing.
+    // (480p on mobile). Shading fewer pixels is the single biggest win when a
+    // large video is playing.
     let dpr = Math.min(window.devicePixelRatio || 1, this.qualityDpr)
     if (isFinite(this.maxBufferW)) dpr = Math.min(dpr, this.maxBufferW / w)
     if (isFinite(this.maxBufferH)) dpr = Math.min(dpr, this.maxBufferH / h)
-    // Below ~0.5x the image turns to mush — not worth the frames.
-    dpr = Math.max(dpr, 0.5)
+    dpr = Math.max(dpr, MIN_DPR)
 
     this.renderer.setPixelRatio(dpr)
     this.renderer.setSize(w, h, false)
@@ -313,6 +334,9 @@ class Engine {
         this.texA.dispose()
         this.texA = null
       }
+      // Forget the uploaded frame position: a replacement video could legitimately
+      // sit at the same currentTime, and we still need its first frame drawn.
+      this.uploadedTimeA = -1
       if (this.material) {
         this.material.uniforms.texA.value = null
         this.material.uniforms.mediaAspectA.value = 1
@@ -328,6 +352,7 @@ class Engine {
         this.texB.dispose()
         this.texB = null
       }
+      this.uploadedTimeB = -1
       if (this.material) {
         this.material.uniforms.texB.value = null
         this.material.uniforms.mediaAspectB.value = 1
@@ -473,6 +498,22 @@ class Engine {
   }
 
   /**
+   * Has a playing video decoded a frame we have not drawn yet?
+   *
+   * Video arrives at the source's frame rate (often 24/25/30 fps) while the
+   * display runs at 60 Hz or more, so a naive loop draws and uploads the same
+   * frame two or three times. Uploading a 1080p frame moves ~8 MB, which makes
+   * this the cheapest large saving available for big videos.
+   */
+  private videoFramePending(): boolean {
+    const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
+    if (vA && !vA.paused && !vA.ended && vA.currentTime !== this.uploadedTimeA) return true
+    const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
+    if (vB && !vB.paused && !vB.ended && vB.currentTime !== this.uploadedTimeB) return true
+    return false
+  }
+
+  /**
    * Is there any reason to draw this frame?
    *
    * Drawing continuously while paused burns battery and heats the device, and
@@ -480,17 +521,27 @@ class Engine {
    * its last frame, so skipping is invisible.
    */
   private needsFrame(): boolean {
-    // A playing video changes every frame.
-    const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
-    const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
-    if (vA && !vA.paused && !vA.ended) return true
-    if (vB && !vB.paused && !vB.ended) return true
+    if (this.videoFramePending()) return true
 
     // The mask is still easing toward the pointer.
     if (this.mouseCurrent.distanceToSquared(this.mouseTarget) > 1e-7) return true
 
     // Something changed: media, mask settings, resize, pointer enter/leave.
     return this.dirty
+  }
+
+  /** Upload a slot's video texture, but only when its frame actually advanced. */
+  private uploadVideoFrame(slot: 'A' | 'B') {
+    const el = slot === 'A' ? this.elA : this.elB
+    const tex = slot === 'A' ? this.texA : this.texB
+    if (!(tex instanceof THREE.VideoTexture) || !(el instanceof HTMLVideoElement)) return
+
+    const t = el.currentTime
+    if (t === (slot === 'A' ? this.uploadedTimeA : this.uploadedTimeB)) return
+
+    if (slot === 'A') this.uploadedTimeA = t
+    else this.uploadedTimeB = t
+    tex.needsUpdate = true
   }
 
   private render() {
@@ -503,9 +554,9 @@ class Engine {
     this.material.uniforms.mouse.value.copy(this.mouseCurrent)
     this.material.uniforms.mouseActive.value = this.mouseActive
 
-    // Update video textures
-    if (this.texA instanceof THREE.VideoTexture) this.texA.needsUpdate = true
-    if (this.texB instanceof THREE.VideoTexture) this.texB.needsUpdate = true
+    // Update video textures — only the frames that are actually new
+    this.uploadVideoFrame('A')
+    this.uploadVideoFrame('B')
 
     // Track single video time (when only one of A/B is video)
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
