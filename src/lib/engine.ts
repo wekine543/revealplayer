@@ -618,8 +618,14 @@ class Engine {
   private videoFramePending(): boolean {
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
     if (vA && !vA.paused && !vA.ended && vA.currentTime !== this.uploadedTimeA) return true
-    const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
-    if (vB && !vB.paused && !vB.ended && vB.currentTime !== this.uploadedTimeB) return true
+
+    // Media B is only on screen while the mask is open, so while it is closed
+    // there is nothing to redraw for it — see uploadVideoFrame().
+    if (this.mouseActive) {
+      const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
+      if (vB && !vB.paused && !vB.ended && vB.currentTime !== this.uploadedTimeB) return true
+    }
+
     return false
   }
 
@@ -642,6 +648,13 @@ class Engine {
 
   /** Upload a slot's video texture, but only when its frame actually advanced. */
   private uploadVideoFrame(slot: 'A' | 'B') {
+    // Media B is invisible while the mask is closed — the shader returns media A
+    // alone. Its decode keeps running (so it stays in sync with A), but there is
+    // no point pushing ~4-8 MB per frame to the GPU for something nobody can
+    // see. The moment the mask opens, the stale timestamp below makes the next
+    // frame upload immediately, still perfectly in sync.
+    if (slot === 'B' && !this.mouseActive) return
+
     const el = slot === 'A' ? this.elA : this.elB
     if (!(el instanceof HTMLVideoElement)) return
 
