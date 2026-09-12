@@ -90,6 +90,19 @@ const STALL_MS = 300
 const LANDING_TIMEOUT_MS = 2000
 /** Store writes for the progress bar: 10/s is plenty and avoids 60 re-renders. */
 const TIME_UPDATE_MS = 100
+/**
+ * A drag that has produced no update for this long is over.
+ *
+ * `beginSeek`/`endSeek` bracket a drag, but the matching "up" event cannot be
+ * relied on: on touch, the browser fires `touchcancel` instead of `touchend`
+ * whenever it decides the gesture is a scroll, when the finger leaves the
+ * element, or when the system interrupts. A missed "up" left `dragging` true
+ * forever, which disables the whole sync loop — B then sat wherever it was and
+ * never returned to sync, no matter how far behind it had fallen. Rather than
+ * trust a second event to arrive, treat silence as the end of the drag: a real
+ * drag calls seek() many times per second, so anything this quiet is finished.
+ */
+const DRAG_IDLE_MS = 600
 /** How long to wait for both elements to have a decodable frame before aligning. */
 const READY_TIMEOUT_MS = 1500
 
@@ -116,6 +129,8 @@ export class SyncManager {
   private userSeekPending = false
   /** True between beginSeek() and endSeek() — the pointer is on the bar. */
   private dragging = false
+  /** When the drag last produced a seek() call, so a lost "up" cannot wedge it. */
+  private dragActiveAt = 0
 
   /** Last seen clock per element, and when it last moved, to spot a starved video. */
   private prevTimeA = -1
@@ -149,6 +164,7 @@ export class SyncManager {
     this.learnPending = false
     this.userSeekPending = false
     this.dragging = false
+    this.dragActiveAt = 0
     this.prevTimeA = -1
     this.prevTimeB = -1
     this.advancedAtA = now
@@ -186,6 +202,14 @@ export class SyncManager {
 
     const settledA = this.seekSettled(a, this.advancedAtA, this.requestedSeekAtA, now)
     const settledB = this.seekSettled(b, this.advancedAtB, this.requestedSeekAtB, now)
+
+    // A drag that has gone quiet is over — see DRAG_IDLE_MS. This is the only
+    // thing that keeps a missed touchend/touchcancel from disabling the loop
+    // for the rest of the session.
+    if (this.dragging && now - this.dragActiveAt > DRAG_IDLE_MS) {
+      this.dragging = false
+      this.userSeekPending = true
+    }
 
     if (this.dragging || a.seeking || b.seeking || !settledA || !settledB) {
       // A seeking element's currentTime is stale, so anything computed now is
@@ -377,9 +401,16 @@ export class SyncManager {
   /** The pointer went down on the progress bar. */
   beginSeek() {
     this.dragging = true
+    this.dragActiveAt = performance.now()
   }
 
-  /** The pointer came off the progress bar: align once as soon as both land. */
+  /**
+   * The pointer came off the progress bar: align once as soon as both land.
+   *
+   * The loop also ends a drag on its own if this never arrives (see
+   * DRAG_IDLE_MS), because on touch the browser is free to send `touchcancel`
+   * instead of `touchend`.
+   */
   endSeek() {
     this.dragging = false
     this.userSeekPending = true
@@ -394,6 +425,7 @@ export class SyncManager {
     if (!a || !b) return
     const now = performance.now()
     this.userSeekPending = true
+    this.dragActiveAt = now
     this.requestedSeekAtA = now
     this.requestedSeekAtB = now
     // A scrub is a fresh episode: whatever the seek budget was spent on before,

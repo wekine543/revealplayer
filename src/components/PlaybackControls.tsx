@@ -227,6 +227,12 @@ export function PlaybackControls() {
             seekTo(t.clientX)
           }}
           onTouchEnd={() => { isDraggingRef.current = false; engine.endSeek() }}
+          // The browser sends this instead of touchend when it takes the
+          // gesture over (a second finger, a system gesture, the touch being
+          // cancelled). Without it the drag never ends and the sync loop stays
+          // parked. SyncManager also ends a silent drag on its own, so this is
+          // the fast path, not the only one.
+          onTouchCancel={() => { isDraggingRef.current = false; engine.endSeek() }}
         >
           <div
             className="absolute top-0 left-0 h-full rounded-full bg-brand-400 transition-colors group-hover:bg-brand-300"
