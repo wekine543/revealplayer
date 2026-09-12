@@ -218,9 +218,18 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-2.5 sm:gap-x-3 px-3 sm:px-4 py-2.5 bg-black/40 rounded-lg border border-white/5">
-      {/* Transport group — play / time / progress (own row on mobile) */}
-      <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto sm:flex-1 min-w-0">
+    // Two fixed rows, not one wrapping row.
+    //
+    // The bar is `flex-1`, i.e. `flex-basis: 0`, so in a wrapping row it is the
+    // thing that gives way: the settings never get pushed onto their own line,
+    // the bar just shrinks. That is why it came out short at 16:9 and collapsed
+    // to a dot at 1:1, and why only a tall screen — narrow enough for the
+    // `sm:` breakpoint to stop applying — ever wrapped into two usable rows.
+    // Giving the transport its own row makes the bar's length depend on nothing
+    // but the window's width, which is what it should have been all along.
+    <div className="flex flex-col gap-2 sm:gap-2.5 px-3 sm:px-4 py-2.5 bg-black/40 rounded-lg border border-white/5">
+      {/* Transport — always the whole first row */}
+      <div className="flex items-center gap-2 sm:gap-3 w-full min-w-0">
         {/* Play/Pause */}
         <button
           onClick={handlePlayPause}
@@ -240,14 +249,19 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
         </button>
 
         {/* Time display */}
-        <span className="text-[10px] sm:text-xs font-mono text-gray-400 tabular-nums whitespace-nowrap">
+        <span className="text-[11px] sm:text-xs font-mono text-gray-400 tabular-nums whitespace-nowrap">
           {formatTime(currentTime)} / {formatTime(duration)}
         </span>
 
-        {/* Progress bar */}
+        {/* Progress bar.
+            The hit area is a 20px strip with the 8px track centred inside it:
+            a 6px-tall target is barely hittable with a finger. The ref and the
+            pointer handlers stay on the outer element because seekTo() measures
+            against it — and the strip is exactly as wide as the track, so the
+            mapping from x to time is unchanged. */}
         <div
           ref={progressRef}
-          className="flex-1 h-1.5 rounded-full bg-white/10 cursor-pointer relative group touch-none"
+          className="flex-1 min-w-0 h-5 flex items-center cursor-pointer group touch-none"
           onMouseDown={handleProgressDown}
           onTouchStart={(e) => {
             const t = e.touches[0]
@@ -268,14 +282,18 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
           // the fast path, not the only one.
           onTouchCancel={() => finishDrag()}
         >
-          <div
-            className="absolute top-0 left-0 h-full rounded-full bg-brand-400 transition-colors group-hover:bg-brand-300"
-            style={{ width: `${progress}%` }}
-          />
-          <div
-            className="absolute top-1/2 w-3 h-3 rounded-full bg-white shadow-md -translate-y-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ left: `${progress}%` }}
-          />
+          <div className="relative w-full h-2 rounded-full bg-white/10">
+            <div
+              className="absolute top-0 left-0 h-full rounded-full bg-brand-400 transition-colors group-hover:bg-brand-300"
+              style={{ width: `${progress}%` }}
+            />
+            {/* Shown by default on touch, where there is no hover to reveal it;
+                hover-only from the `sm` breakpoint up. */}
+            <div
+              className="absolute top-1/2 w-3 h-3 rounded-full bg-white shadow-md -translate-y-1/2 -translate-x-1/2 opacity-70 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+              style={{ left: `${progress}%` }}
+            />
+          </div>
         </div>
 
         {/* View mode — mask (B revealed through A) or grid (both whole).
@@ -326,17 +344,17 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
         )}
       </div>
 
-      {/* Settings group — centers below the transport row on mobile.
+      {/* Settings — always the second row.
           Hidden entirely in web fullscreen: the point of that mode is to leave
-          the picture and the transport and nothing else.
+          the picture and the transport and nothing else, which is also why that
+          mode is unaffected by the two-row change above.
 
-          `flex-wrap` is not optional: this row grew to eight controls (two
-          volume groups once A/B were split, plus quality and web fullscreen)
-          and in portrait a single unwrapped line pushed the last ones — A's
-          volume, fullscreen, screenshot — off the right edge where they could
-          not be reached at all. */}
+          `flex-wrap` is not optional: this row holds eight controls (two volume
+          groups once A/B were split, plus quality and web fullscreen), and a
+          single unwrapped line pushed the last ones past the right edge where
+          they could not be reached at all. */}
       <div
-        className={`items-center justify-center gap-x-3 gap-y-2 w-full sm:w-auto ${
+        className={`items-center justify-center gap-x-3 gap-y-2 w-full ${
           webFullscreen ? 'hidden' : 'flex flex-wrap'
         }`}
       >
