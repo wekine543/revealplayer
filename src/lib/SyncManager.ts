@@ -55,23 +55,39 @@ const SEEK_WINDOW_MS = 2500
  */
 const INITIAL_LEAD_MS = 100
 /** Ceiling for the learned lead, so one pathological landing cannot skew it. */
-const MAX_LEAD_MS = 900
+const MAX_LEAD_MS = 1500
 /** How much of the landing error to fold into the lead. */
 const LEAD_GAIN = 0.9
 /**
- * Landing errors larger than this are not a mis-set lead — they are a stall, a
- * seek clamped at the end of the clip, or a seek that never landed. Learning
- * from those would corrupt the estimate.
+ * Largest lead correction a single landing may cause.
+ *
+ * A landing error is normally the lead being wrong by exactly that much, so
+ * folding in all of it converges in one step. But a large offset means a long
+ * jump, and a long jump means a slow seek — so on a slow device the error is
+ * large precisely when the lead is most wrong. Rejecting "big" errors as
+ * implausible therefore breaks exactly the case that needs help most: the lead
+ * never grows, every seek lands the same distance short, and B falls behind for
+ * good while freezing on each attempt (a user sees "stuttering, never catches
+ * up"). Bounding the step instead keeps a pathological sample (a stall, a seek
+ * clamped at the end of the clip) from throwing the lead across its whole range,
+ * while a genuinely slow device still reaches the right value in one or two
+ * seeks.
  */
-const MAX_LEARN_ERR = 0.4
+const MAX_LEARN_STEP_MS = 600
 /** A playing video whose clock has not moved for this long is out of data. */
 const STALL_MS = 300
 /**
  * How long to wait for a requested seek to visibly land before giving up on it
  * and judging the offset anyway (a seek that never completes must not wedge the
  * loop).
+ *
+ * Generous on purpose: on a slow phone a long jump can take a second or more,
+ * and giving up early means judging a stale position and issuing the seek
+ * again — which aborts the one still in flight. The `seeking` check above is
+ * what normally holds the loop, so this only bounds the case where an element
+ * reports not-seeking while its clock is still stale.
  */
-const LANDING_TIMEOUT_MS = 1200
+const LANDING_TIMEOUT_MS = 2000
 /** Store writes for the progress bar: 10/s is plenty and avoids 60 re-renders. */
 const TIME_UPDATE_MS = 100
 /** How long to wait for both elements to have a decodable frame before aligning. */
@@ -234,15 +250,19 @@ export class SyncManager {
    *
    * This is the whole latency model: we never try to predict how long a seek
    * takes, we just look at where B ended up. If it landed behind by δ, the lead
-   * was δ too short; if it landed ahead, δ too long. One or two corrections
-   * converge regardless of the device.
+   * was δ too short; if it landed ahead, δ too long. Note that δ *is* the
+   * latency measurement — A advanced by the seek's duration while B jumped by
+   * `lead`, so δ = duration - lead. Folding in all of it therefore sets the lead
+   * to the measured latency exactly; the gain just damps timing noise.
    */
   private learnFromLanding(a: HTMLVideoElement, b: HTMLVideoElement, landed: boolean) {
     this.learnPending = false
+    // Only a seek that actually landed teaches us anything: one that hit the
+    // timeout left B wherever it was, and its "error" is not a lead error.
     if (!landed) return
     const err = a.currentTime - b.currentTime // > 0 → B landed behind
-    if (Math.abs(err) > MAX_LEARN_ERR) return
-    this.leadMs = Math.max(0, Math.min(MAX_LEAD_MS, this.leadMs + err * 1000 * LEAD_GAIN))
+    const step = Math.max(-MAX_LEARN_STEP_MS, Math.min(MAX_LEARN_STEP_MS, err * 1000 * LEAD_GAIN))
+    this.leadMs = Math.max(0, Math.min(MAX_LEAD_MS, this.leadMs + step))
   }
 
   /** Note when each clock last moved, so a starved element can be spotted. */
