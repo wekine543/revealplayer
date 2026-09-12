@@ -52,6 +52,28 @@ interface VideoScaler {
 }
 
 /**
+ * Every texture in this app must be uploaded with NO colour-space conversion.
+ *
+ * The fragment shader is a plain ShaderMaterial that writes `gl_FragColor`
+ * directly, so Three.js never appends its output sRGB encoding (that lives in
+ * the `colorspace_fragment` chunk, which custom shaders do not include). The
+ * drawing buffer is sRGB, so whatever the sampler returns is what the user
+ * sees — meaning the bytes have to go through untouched or the picture comes
+ * out wrong.
+ *
+ * Marking a texture `SRGBColorSpace` instead makes Three.js pick the
+ * `SRGB8_ALPHA8` internal format, and the GPU then linearises it on sample.
+ * Those linear values reach the framebuffer unconverted, i.e. the picture is
+ * displayed about 35% too dark.
+ *
+ * Videos never showed this, which is what made the bug look image-specific:
+ * `getInternalFormat()` is called with `forceLinearTransfer = texture.isVideoTexture`,
+ * so a VideoTexture is uploaded as plain RGBA8 **whatever its colorSpace says**.
+ * Images get no such exemption — hence "images are dark, videos are fine".
+ */
+const TEXTURE_COLOR_SPACE = THREE.NoColorSpace
+
+/**
  * Build a downscale target for a video, or null when it is already small enough
  * to upload directly.
  *
@@ -346,7 +368,7 @@ class Engine {
       const texture = new THREE.VideoTexture(video)
       texture.minFilter = THREE.LinearFilter
       texture.magFilter = THREE.LinearFilter
-      texture.colorSpace = THREE.SRGBColorSpace
+      texture.colorSpace = TEXTURE_COLOR_SPACE
 
       if (slot === 'A') {
         this.elA = video
@@ -373,7 +395,9 @@ class Engine {
         (texture) => {
           texture.minFilter = THREE.LinearFilter
           texture.magFilter = THREE.LinearFilter
-          texture.colorSpace = THREE.SRGBColorSpace
+          // Not SRGBColorSpace — see TEXTURE_COLOR_SPACE. This is the line that
+          // made imported images come out visibly dark while videos looked fine.
+          texture.colorSpace = TEXTURE_COLOR_SPACE
 
           if (slot === 'A') {
             if (this.texA) this.texA.dispose()
@@ -442,7 +466,7 @@ class Engine {
         const direct = new THREE.VideoTexture(video)
         direct.minFilter = THREE.LinearFilter
         direct.magFilter = THREE.LinearFilter
-        direct.colorSpace = THREE.SRGBColorSpace
+        direct.colorSpace = TEXTURE_COLOR_SPACE
         if (slot === 'A') {
           if (this.texA) this.texA.dispose()
           this.texA = direct
@@ -471,16 +495,9 @@ class Engine {
     const tex = new THREE.CanvasTexture(scaler.canvas)
     tex.minFilter = THREE.LinearFilter
     tex.magFilter = THREE.LinearFilter
-    // Deliberately NOT SRGBColorSpace.
-    //
-    // The fragment shader is a raw ShaderMaterial that writes gl_FragColor
-    // directly, so Three.js never appends its output sRGB conversion. Marking a
-    // texture as sRGB makes the GPU linearise it on sample, and those linear
-    // values then reach the framebuffer unconverted — the picture comes out
-    // visibly dark (measured ~75 average luma vs ~119 for the video path).
-    // A plain video texture is effectively not linearised, so matching that
-    // keeps the scaled path looking identical to the direct one.
-    tex.colorSpace = THREE.NoColorSpace
+    // See TEXTURE_COLOR_SPACE. Matching the direct path is what keeps a scaled
+    // clip looking identical to an unscaled one.
+    tex.colorSpace = TEXTURE_COLOR_SPACE
 
     if (slot === 'A') {
       if (this.texA) this.texA.dispose()
