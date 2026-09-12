@@ -10,49 +10,72 @@
  * "still out of sync" on the very next frame, issues another seek, and Chrome
  * aborts the seek in flight to start the new one. The result is a seek storm:
  * B never completes a single seek and freezes, with an occasional visible jump
- * when one does slip through. It triggers exactly where a real offset exists —
- * the first frames of playback, and after the user drags the progress bar.
+ * when one does slip through.
  *
- * The rules below exist to break that feedback loop:
+ * Three rules break that loop and make the pair re-lock quickly:
  *
- *   1. Never compare or correct while either element is seeking, and stay quiet
- *      for a moment after the seek lands (its position is still settling).
- *   2. Prefer a `playbackRate` nudge. Only seek when the offset is large enough
- *      to be worth a decoder restart, never twice for the same target, and never
- *      more than a few times inside a rolling window.
- *   3. Align exactly once at the moments where an offset is known to exist:
- *      playback start, and the end of a user seek.
+ *   1. ONE seek at a time. A requested seek is only considered landed once the
+ *      clock has visibly moved past the request (see seekSettled); until then
+ *      the loop does nothing at all.
+ *   2. AIM AHEAD by a learned amount. A keeps playing while B's decoder
+ *      restarts, so aiming at A's *current* position always lands B behind by
+ *      exactly the seek latency — the offset that triggered the seek is still
+ *      there when it completes, and the loop seeks again. The lead is not
+ *      measured from `seeked` (that timing is polluted whenever a seek is
+ *      superseded, and a fixed ceiling then locks in a permanent shortfall);
+ *      it is learned from the error at each landing, which converges in one or
+ *      two seeks and needs no latency model at all.
+ *   3. CLOSE THE REMAINDER with a rate nudge. The soft-sync law is
+ *      proportional, so the time it needs is set by RATE_GAIN alone and does
+ *      not improve for small offsets. A gain of 0.33 with a 4% cap closed a
+ *      200ms offset at 40ms/s — five seconds of visible misalignment, which is
+ *      exactly what users complained about. 2.0 with a 12% cap closes the same
+ *      offset in under 200ms. Both tracks are muted, so the rate change costs
+ *      no pitch and 12% is only visible if you look for it.
  */
 
-/** Inside this offset, leave B alone — it is below a frame at any sane rate. */
+/** Inside this offset, leave B alone — below one frame at any sane rate. */
 const MICRO = 0.005
 /** Above this, a rate nudge is too slow to be worth it; seek instead. */
-const SEEK_AT = 0.12
-/** Strongest playbackRate correction for soft sync (±4%). */
-const MAX_ADJUST = 0.04
+const SEEK_AT = 0.08
+/** Strongest playbackRate correction for soft sync (±12%). */
+const MAX_ADJUST = 0.12
 /** Soft-sync gain: correction = offset * GAIN, clamped to ±MAX_ADJUST. */
-const RATE_GAIN = 0.33
+const RATE_GAIN = 2
 /** Minimum gap between two hard syncs, so a seek gets time to land. */
-const HARD_COOLDOWN_MS = 350
-/** Quiet period after any seek before corrections resume. */
-const SETTLE_MS = 120
-/** Ceiling for the measured seek latency, so one cold seek cannot skew it. */
-const MAX_SEEK_LATENCY_MS = 400
+const HARD_COOLDOWN_MS = 300
 /** Hard seeks allowed inside SEEK_WINDOW_MS; beyond that, rate nudges only. */
 const SEEK_BUDGET = 4
-const SEEK_WINDOW_MS = 2000
+const SEEK_WINDOW_MS = 2500
+/**
+ * First guess for the lead, before any landing has been observed. Typical
+ * seek latency is tens of ms on a desktop and a couple of hundred on a phone,
+ * so this splits the difference: the first seek lands close, and the error it
+ * leaves teaches the controller the real value.
+ */
+const INITIAL_LEAD_MS = 100
+/** Ceiling for the learned lead, so one pathological landing cannot skew it. */
+const MAX_LEAD_MS = 900
+/** How much of the landing error to fold into the lead. */
+const LEAD_GAIN = 0.9
+/**
+ * Landing errors larger than this are not a mis-set lead — they are a stall, a
+ * seek clamped at the end of the clip, or a seek that never landed. Learning
+ * from those would corrupt the estimate.
+ */
+const MAX_LEARN_ERR = 0.4
+/** A playing video whose clock has not moved for this long is out of data. */
+const STALL_MS = 300
+/**
+ * How long to wait for a requested seek to visibly land before giving up on it
+ * and judging the offset anyway (a seek that never completes must not wedge the
+ * loop).
+ */
+const LANDING_TIMEOUT_MS = 1200
 /** Store writes for the progress bar: 10/s is plenty and avoids 60 re-renders. */
 const TIME_UPDATE_MS = 100
-/** Do not seek during startup alignment for less than this. */
-const ALIGN_EPSILON = 0.02
 /** How long to wait for both elements to have a decodable frame before aligning. */
 const READY_TIMEOUT_MS = 1500
-
-interface Watcher {
-  el: HTMLVideoElement
-  type: string
-  fn: EventListener
-}
 
 export class SyncManager {
   private rafId: number | null = null
@@ -60,48 +83,63 @@ export class SyncManager {
   private videoB: HTMLVideoElement | null = null
   private onTimeUpdate: ((time: number) => void) | null = null
 
-  /** No corrections before this timestamp (a seek is in flight or just landed). */
-  private suppressUntil = 0
   private lastHardSeekAt = -Infinity
   /** Timestamps of recent hard seeks, pruned to SEEK_WINDOW_MS. */
   private seekStamps: number[] = []
   /** Target of the last hard seek, so the same one is never repeated. */
   private lastSeekTarget = NaN
   /**
-   * Measured time for a seek to complete. A keeps advancing while B's decoder
-   * restarts, so aiming at A's *current* position always lands B behind by
-   * exactly this much — which is why the target is lead by it (see correct()).
-   * Zero means "not measured yet".
+   * How far ahead of A to aim B, in ms. Learned: every landing measures the
+   * error it left and folds it back in here, so an inaccurate first guess costs
+   * one extra seek and then stops mattering.
    */
-  private seekLatencyMs = 0
-  private seekIssuedAt = 0
-  /** Set from the elements' `waiting`/`stalled` events, cleared on `playing`. */
-  private starvedA = false
-  private starvedB = false
+  private leadMs = INITIAL_LEAD_MS
+  /** A hard seek is awaiting its landing, so nothing may be judged yet. */
+  private learnPending = false
+  /** Set by seek(), consumed by the loop once both elements have landed. */
+  private userSeekPending = false
+  /** True between beginSeek() and endSeek() — the pointer is on the bar. */
+  private dragging = false
+
+  /** Last seen clock per element, and when it last moved, to spot a starved video. */
+  private prevTimeA = -1
+  private prevTimeB = -1
+  private advancedAtA = 0
+  private advancedAtB = 0
+  /**
+   * When a seek was last requested per element. Until that element's clock has
+   * demonstrably moved past this mark, its position cannot be trusted — see
+   * seekSettled().
+   */
+  private requestedSeekAtA = 0
+  private requestedSeekAtB = 0
+
   private lastTimeUpdateAt = 0
-  private watchers: Watcher[] = []
 
   start(
     videoA: HTMLVideoElement,
     videoB: HTMLVideoElement,
     onTimeUpdate?: (time: number) => void,
   ) {
-    this.detachWatchers()
     this.videoA = videoA
     this.videoB = videoB
     this.onTimeUpdate = onTimeUpdate ?? null
 
-    this.suppressUntil = performance.now() + SETTLE_MS
+    const now = performance.now()
     this.lastHardSeekAt = -Infinity
     this.seekStamps = []
     this.lastSeekTarget = NaN
-    this.seekIssuedAt = 0
-    this.starvedA = false
-    this.starvedB = false
+    this.leadMs = INITIAL_LEAD_MS
+    this.learnPending = false
+    this.userSeekPending = false
+    this.dragging = false
+    this.prevTimeA = -1
+    this.prevTimeB = -1
+    this.advancedAtA = now
+    this.advancedAtB = now
+    this.requestedSeekAtA = 0
+    this.requestedSeekAtB = 0
     this.lastTimeUpdateAt = 0
-
-    this.attachWatchers(videoA, true)
-    this.attachWatchers(videoB, false)
 
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
     this.loop()
@@ -112,58 +150,9 @@ export class SyncManager {
       cancelAnimationFrame(this.rafId)
       this.rafId = null
     }
-    this.detachWatchers()
     this.videoA = null
     this.videoB = null
     this.onTimeUpdate = null
-  }
-
-  // ---- Element event wiring ----
-
-  /**
-   * Track whether an element is starved of data. A video that is out of data
-   * has a frozen clock, so its `currentTime` stops advancing; comparing against
-   * it would report a "drift" that is really just buffering, and any correction
-   * would have to be undone once the data arrives.
-   */
-  private attachWatchers(el: HTMLVideoElement, isA: boolean) {
-    const starve = () => {
-      if (isA) this.starvedA = true
-      else this.starvedB = true
-    }
-    const resume = () => {
-      if (isA) this.starvedA = false
-      else this.starvedB = false
-      // Data just arrived — let the pipeline settle before judging the offset.
-      this.suppressUntil = performance.now() + SETTLE_MS
-    }
-    const pairs: Array<[string, EventListener]> = [
-      ['waiting', starve],
-      ['stalled', starve],
-      ['playing', resume],
-    ]
-
-    // Only B is ever seeked by the sync loop, so measure the latency there.
-    if (!isA) {
-      const onSeeked = () => {
-        if (this.seekIssuedAt <= 0) return // a seek we did not issue
-        const measured = Math.min(performance.now() - this.seekIssuedAt, MAX_SEEK_LATENCY_MS)
-        this.seekIssuedAt = 0
-        this.seekLatencyMs =
-          this.seekLatencyMs === 0 ? measured : this.seekLatencyMs * 0.5 + measured * 0.5
-      }
-      pairs.push(['seeked', onSeeked])
-    }
-
-    for (const [type, fn] of pairs) {
-      el.addEventListener(type, fn)
-      this.watchers.push({ el, type, fn })
-    }
-  }
-
-  private detachWatchers() {
-    for (const w of this.watchers) w.el.removeEventListener(w.type, w.fn)
-    this.watchers = []
   }
 
   // ---- Main loop ----
@@ -177,23 +166,107 @@ export class SyncManager {
     }
 
     const now = performance.now()
-    const seeking = a.seeking || b.seeking
+    this.trackAdvance(a, b, now)
 
-    if (seeking) {
-      // currentTime is stale on a seeking element, so anything computed now is
-      // noise. Hold off, and keep holding off for a moment after it lands.
-      this.suppressUntil = now + SETTLE_MS
+    const settledA = this.seekSettled(a, this.advancedAtA, this.requestedSeekAtA, now)
+    const settledB = this.seekSettled(b, this.advancedAtB, this.requestedSeekAtB, now)
+
+    if (this.dragging || a.seeking || b.seeking || !settledA || !settledB) {
+      // A seeking element's currentTime is stale, so anything computed now is
+      // noise. Note this is not just "is seeking": an element can report
+      // `seeking === false` while still reading the pre-seek position, and
+      // judging the offset in that window re-issues the seek every frame. So a
+      // requested seek is only considered settled once the clock has moved.
+      this.rafId = requestAnimationFrame(this.loop)
+      return
+    }
+
+    if (this.learnPending) {
+      // Only a seek that actually landed teaches us anything: one that hit the
+      // timeout left B wherever it was, and its "error" is not a lead error.
+      this.learnFromLanding(a, b, this.advancedAtB > this.requestedSeekAtB)
+    }
+
+    if (now - this.lastTimeUpdateAt >= TIME_UPDATE_MS) {
+      this.lastTimeUpdateAt = now
+      this.onTimeUpdate?.(a.currentTime)
+    }
+
+    if (a.paused || b.paused) {
+      this.rafId = requestAnimationFrame(this.loop)
+      return
+    }
+
+    if (this.userSeekPending) {
+      // The user let go of the bar and both seeks have landed. Re-align once,
+      // immediately — this is the case where a slow drift used to be left to
+      // soft sync for several seconds.
+      this.userSeekPending = false
+      this.alignNow()
     } else {
-      if (now - this.lastTimeUpdateAt >= TIME_UPDATE_MS) {
-        this.lastTimeUpdateAt = now
-        this.onTimeUpdate?.(a.currentTime)
-      }
-      if (!a.paused && !b.paused && now >= this.suppressUntil) {
-        this.correct(now)
-      }
+      this.correct(now)
     }
 
     this.rafId = requestAnimationFrame(this.loop)
+  }
+
+  /**
+   * Has a requested seek visibly landed?
+   *
+   * `seeking === false` alone is not a safe signal: there is a window where the
+   * element reports not-seeking while `currentTime` still reads the pre-seek
+   * position, and a loop that judges the offset there issues the seek again on
+   * every frame — a fresh storm in place of the old one. Requiring the clock to
+   * have visibly moved since the request is what makes "it landed" unambiguous,
+   * and it needs no arbitrary delay. The timeout keeps a seek that never
+   * completes from wedging the loop forever.
+   */
+  private seekSettled(v: HTMLVideoElement, advancedAt: number, requestedAt: number, now: number) {
+    if (requestedAt <= 0) return true
+    if (v.seeking) return false
+    if (advancedAt > requestedAt) return true
+    return now - requestedAt > LANDING_TIMEOUT_MS
+  }
+
+  /**
+   * Fold the error a seek left behind into the lead, so the next one lands
+   * closer.
+   *
+   * This is the whole latency model: we never try to predict how long a seek
+   * takes, we just look at where B ended up. If it landed behind by δ, the lead
+   * was δ too short; if it landed ahead, δ too long. One or two corrections
+   * converge regardless of the device.
+   */
+  private learnFromLanding(a: HTMLVideoElement, b: HTMLVideoElement, landed: boolean) {
+    this.learnPending = false
+    if (!landed) return
+    const err = a.currentTime - b.currentTime // > 0 → B landed behind
+    if (Math.abs(err) > MAX_LEARN_ERR) return
+    this.leadMs = Math.max(0, Math.min(MAX_LEAD_MS, this.leadMs + err * 1000 * LEAD_GAIN))
+  }
+
+  /** Note when each clock last moved, so a starved element can be spotted. */
+  private trackAdvance(a: HTMLVideoElement, b: HTMLVideoElement, now: number) {
+    if (a.currentTime !== this.prevTimeA) {
+      this.prevTimeA = a.currentTime
+      this.advancedAtA = now
+    }
+    if (b.currentTime !== this.prevTimeB) {
+      this.prevTimeB = b.currentTime
+      this.advancedAtB = now
+    }
+  }
+
+  /**
+   * Is this element starved of data? A video that is out of data has a frozen
+   * clock, so comparing against it would report a "drift" that is really just
+   * buffering, and any correction would have to be undone once data arrives.
+   * Detected from the clock rather than from `waiting`/`playing` events, which
+   * can get out of step if one of the pair never fires.
+   */
+  private isStalled(v: HTMLVideoElement, advancedAt: number, now: number) {
+    if (v.paused || v.seeking) return false
+    return now - advancedAt > STALL_MS
   }
 
   /** Compare B against A and apply the cheapest correction that will work. */
@@ -203,7 +276,8 @@ export class SyncManager {
     if (!a || !b) return
 
     // A starved element has no reliable clock to compare against.
-    if (this.starvedA || this.starvedB || a.readyState < 2 || b.readyState < 2) return
+    if (this.isStalled(a, this.advancedAtA, now) || this.isStalled(b, this.advancedAtB, now)) return
+    if (a.readyState < 2 || b.readyState < 2) return
 
     const diff = a.currentTime - b.currentTime // > 0 → B is behind
     const absDiff = Math.abs(diff)
@@ -215,23 +289,17 @@ export class SyncManager {
     }
 
     if (absDiff <= SEEK_AT) {
-      // Soft sync: proportional, so a 10 ms error does not get the same kick as
-      // a 110 ms one — that is what makes a fixed ±2% toggle ring.
+      // Soft sync: proportional, so a 10ms error does not get the same kick as
+      // a 90ms one — that is what makes a fixed ±2% toggle ring.
       const adjust = Math.max(-MAX_ADJUST, Math.min(MAX_ADJUST, diff * RATE_GAIN))
       this.applyRateB(baseRate * (1 + adjust))
       return
     }
 
-    // Large offset. A rate nudge would need seconds to close it, so seek — but
-    // only if the budget allows, and never to a target we just used.
+    // Large offset. A rate nudge would need about a second to close it, so seek
+    // — but only if the budget allows, and never to a target we just used.
     if (this.canHardSeek(now) && !(Math.abs(a.currentTime - this.lastSeekTarget) <= MICRO)) {
-      const target = this.seekTargetFor(a, baseRate)
-      this.lastSeekTarget = target
-      this.lastHardSeekAt = now
-      this.seekStamps.push(now)
-      this.seekIssuedAt = now
-      this.suppressUntil = now + SETTLE_MS
-      b.currentTime = target
+      this.hardSeek(a, b, now)
       this.applyRateB(baseRate)
       return
     }
@@ -249,17 +317,28 @@ export class SyncManager {
     return this.seekStamps.length < SEEK_BUDGET
   }
 
+  /** Seek B onto where A will be, leading by the learned amount. */
+  private hardSeek(a: HTMLVideoElement, b: HTMLVideoElement, now: number) {
+    const target = this.seekTargetFor(a)
+    this.lastSeekTarget = target
+    this.lastHardSeekAt = now
+    this.seekStamps.push(now)
+    this.learnPending = true
+    this.requestedSeekAtB = now
+    b.currentTime = target
+  }
+
   /**
    * Where B should land.
    *
    * Aiming at A's current position is the obvious choice and the wrong one: the
-   * decoder needs `seekLatencyMs` to get there, and A keeps playing throughout,
-   * so B lands exactly that far behind — the offset that triggered the seek is
-   * still there when the seek completes. Leading the target by the measured
-   * latency lands B where A will actually be.
+   * decoder needs some time to get there, and A keeps playing throughout, so B
+   * lands exactly that far behind — the offset that triggered the seek is still
+   * there when the seek completes. Leading by the learned amount lands B where
+   * A will actually be by then.
    */
-  private seekTargetFor(a: HTMLVideoElement, baseRate: number) {
-    const lead = (this.seekLatencyMs / 1000) * baseRate
+  private seekTargetFor(a: HTMLVideoElement) {
+    const lead = (this.leadMs / 1000) * a.playbackRate
     let target = a.currentTime + lead
     if (isFinite(a.duration) && a.duration > 0) target = Math.min(target, a.duration - 0.05)
     return Math.max(0, target)
@@ -275,6 +354,17 @@ export class SyncManager {
 
   // ---- Public controls ----
 
+  /** The pointer went down on the progress bar. */
+  beginSeek() {
+    this.dragging = true
+  }
+
+  /** The pointer came off the progress bar: align once as soon as both land. */
+  endSeek() {
+    this.dragging = false
+    this.userSeekPending = true
+  }
+
   // Called while the user scrubs — both videos jump to the same position, and
   // the loop stays out of the way until they land. Re-aligning on every
   // intermediate pointer position is what used to fight the drag.
@@ -282,7 +372,14 @@ export class SyncManager {
     const a = this.videoA
     const b = this.videoB
     if (!a || !b) return
-    this.suppressUntil = performance.now() + SETTLE_MS
+    const now = performance.now()
+    this.userSeekPending = true
+    this.requestedSeekAtA = now
+    this.requestedSeekAtB = now
+    // A scrub is a fresh episode: whatever the seek budget was spent on before,
+    // re-locking after this drag is exactly what the budget is for.
+    this.seekStamps = []
+    this.lastHardSeekAt = -Infinity
     a.currentTime = time
     b.currentTime = time
   }
@@ -300,6 +397,7 @@ export class SyncManager {
       b.play().catch(() => undefined),
     ])
     await this.waitUntilReady()
+    this.userSeekPending = false
     this.alignNow()
   }
 
@@ -354,24 +452,24 @@ export class SyncManager {
   }
 
   /**
-   * One-shot alignment: put B where A is, then let the loop take over. Used at
-   * playback start, where a known offset exists and a single seek is correct.
+   * One-shot alignment: put B where A is (leading by the learned amount), then
+   * let the loop take over. Used at playback start and at the end of a user
+   * scrub — the two moments where a known offset exists and a single seek is
+   * the correct answer.
+   *
+   * Below SEEK_AT the remainder is left to soft sync on purpose: a seek costs
+   * B a visible freeze while its decoder restarts, and that is a worse trade
+   * than a few hundred milliseconds of imperceptible rate nudge.
    */
   private alignNow() {
     const a = this.videoA
     const b = this.videoB
     if (!a || !b) return
     const now = performance.now()
-    const diff = a.currentTime - b.currentTime
 
-    if (Math.abs(diff) > ALIGN_EPSILON && !a.seeking && !b.seeking) {
-      b.currentTime = a.currentTime
-      this.lastSeekTarget = a.currentTime
-      this.lastHardSeekAt = now
-      this.seekStamps.push(now)
-      this.seekIssuedAt = now
+    if (Math.abs(a.currentTime - b.currentTime) > SEEK_AT && !a.seeking && !b.seeking) {
+      this.hardSeek(a, b, now)
     }
     this.applyRateB(a.playbackRate)
-    this.suppressUntil = now + SETTLE_MS
   }
 }

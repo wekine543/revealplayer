@@ -49,7 +49,7 @@ export function PlaybackControls() {
     if (!isDraggingRef.current) return
 
     const onMove = (e: MouseEvent) => seekTo(e.clientX)
-    const onUp = () => { isDraggingRef.current = false }
+    const onUp = () => { isDraggingRef.current = false; engine.endSeek() }
 
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
@@ -62,11 +62,13 @@ export function PlaybackControls() {
   const handleProgressDown = (e: React.MouseEvent) => {
     e.preventDefault()
     isDraggingRef.current = true
+    engine.beginSeek()
     seekTo(e.clientX)
     // Manually attach since the effect above only fires on re-render
     const onMove = (ev: MouseEvent) => seekTo(ev.clientX)
     const onUp = () => {
       isDraggingRef.current = false
+      engine.endSeek()
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
@@ -216,6 +218,7 @@ export function PlaybackControls() {
             const t = e.touches[0]
             if (!t) return
             isDraggingRef.current = true
+            engine.beginSeek()
             seekTo(t.clientX)
           }}
           onTouchMove={(e) => {
@@ -223,7 +226,7 @@ export function PlaybackControls() {
             if (!t) return
             seekTo(t.clientX)
           }}
-          onTouchEnd={() => { isDraggingRef.current = false }}
+          onTouchEnd={() => { isDraggingRef.current = false; engine.endSeek() }}
         >
           <div
             className="absolute top-0 left-0 h-full rounded-full bg-brand-400 transition-colors group-hover:bg-brand-300"

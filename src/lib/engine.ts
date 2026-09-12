@@ -532,6 +532,16 @@ class Engine {
     this.dirty = true
   }
 
+  /** The user grabbed the progress bar. */
+  beginSeek() {
+    this.sync.beginSeek()
+  }
+
+  /** The user let go — the pair re-aligns once both seeks land. */
+  endSeek() {
+    this.sync.endSeek()
+  }
+
   setRate(rate: number) {
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
     const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
