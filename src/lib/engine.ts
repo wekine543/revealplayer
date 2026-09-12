@@ -24,12 +24,26 @@ const MIN_DPR = 0.5
  * aligning, and settling.
  *
  * This is a budget, not a per-call timeout: the two waits and the alignment
- * share it, so the pause the user sees after releasing the bar is bounded by
- * this number regardless of how slow the follower is. It is deliberately small —
- * pausing for long enough to notice is worse than a pair that needs one
- * correction afterwards, which the running loop already knows how to do.
+ * share it, so the pause the user sees is bounded by this number regardless of
+ * how slow the follower is. It is deliberately small — pausing for long enough
+ * to notice is worse than a pair that needs one correction afterwards, which
+ * the running loop already knows how to do.
+ *
+ * The two call sites do not need the same budget:
+ *
+ *  - LOOP: the clip just hit `ended`, so the decoder is already parked at the
+ *    tail and the jump back to 0 is a rewind into data that is still buffered.
+ *    It is also a moment with nothing to interrupt — the picture is already
+ *    frozen on the last frame — so a longer pause buys nothing the user can
+ *    see. Kept at 250ms.
+ *  - SCRUB: the user picked an arbitrary point, so both decoders usually have to
+ *    restart from a distant keyframe and refill from scratch, and the pause
+ *    lands in the middle of intentional interaction. Given the larger budget
+ *    (400ms) — long enough for a slow follower to finish, still short enough to
+ *    read as immediate.
  */
-const RESYNC_READY_TIMEOUT_MS = 250
+const LOOP_RESYNC_BUDGET_MS = 250
+const SCRUB_RESYNC_BUDGET_MS = 400
 
 /** Offscreen downscale target, used only when a video exceeds the tier's cap. */
 interface VideoScaler {
@@ -597,8 +611,15 @@ class Engine {
    *
    * `resume` restores the state the caller found the player in: a scrub while
    * paused must not start playback as a side effect.
+   *
+   * `budgetMs` is the total time this may hold the pause, shared by both waits
+   * and the alignment (see the two constants above).
    */
-  async realignAndResume(resume: boolean, time?: number): Promise<void> {
+  async realignAndResume(
+    resume: boolean,
+    time?: number,
+    budgetMs: number = SCRUB_RESYNC_BUDGET_MS,
+  ): Promise<void> {
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
     const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
     if (!vA || !vB) return
@@ -614,7 +635,7 @@ class Engine {
     // "B has finished loading" and "B has one frame and will stall again".
     // Whatever the budget, if the follower is still loading when it runs out we
     // start anyway rather than hold the pause any longer.
-    const deadline = performance.now() + RESYNC_READY_TIMEOUT_MS
+    const deadline = performance.now() + budgetMs
     const left = () => Math.max(0, deadline - performance.now())
     await this.sync.waitReady(3, left())
     await this.sync.alignPaused(left())
@@ -674,7 +695,7 @@ class Engine {
    */
   private handleVideoEnded = () => {
     if (this._loopEnabled) {
-      void this.realignAndResume(true, 0)
+      void this.realignAndResume(true, 0, LOOP_RESYNC_BUDGET_MS)
       return
     }
     this.onVideoEnded?.()

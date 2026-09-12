@@ -293,9 +293,17 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
 
       {/* Settings group — centers below the transport row on mobile.
           Hidden entirely in web fullscreen: the point of that mode is to leave
-          the picture and the transport and nothing else. */}
+          the picture and the transport and nothing else.
+
+          `flex-wrap` is not optional: this row grew to eight controls (two
+          volume groups once A/B were split, plus quality and web fullscreen)
+          and in portrait a single unwrapped line pushed the last ones — A's
+          volume, fullscreen, screenshot — off the right edge where they could
+          not be reached at all. */}
       <div
-        className={`items-center justify-center gap-3 w-full sm:w-auto ${webFullscreen ? 'hidden' : 'flex'}`}
+        className={`items-center justify-center gap-x-3 gap-y-2 w-full sm:w-auto ${
+          webFullscreen ? 'hidden' : 'flex flex-wrap'
+        }`}
       >
         {/* Volume — separate per slot, so the two sources can be balanced */}
         {(['A', 'B'] as const).map((slot) => {
