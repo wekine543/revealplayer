@@ -36,8 +36,17 @@
 
 /** Inside this offset, leave B alone — below one frame at any sane rate. */
 const MICRO = 0.005
-/** Above this, a rate nudge is too slow to be worth it; seek instead. */
-const SEEK_AT = 0.08
+/**
+ * Above this, a rate nudge is too slow to be worth it; seek instead.
+ *
+ * A seek costs a decoder restart and a frozen picture for its whole latency;
+ * soft sync costs a slightly-fast playback that closes the offset at
+ * MAX_ADJUST*rate per second. At 150ms the nudge is done in about 1.25s and is
+ * barely visible, while on a slow phone a seek would freeze the picture for
+ * longer than that to fix the same thing. So the smaller offsets are handed to
+ * the rate nudge on purpose.
+ */
+const SEEK_AT = 0.15
 /** Strongest playbackRate correction for soft sync (±12%). */
 const MAX_ADJUST = 0.12
 /** Soft-sync gain: correction = offset * GAIN, clamped to ±MAX_ADJUST. */
@@ -48,32 +57,49 @@ const HARD_COOLDOWN_MS = 300
 const SEEK_BUDGET = 4
 const SEEK_WINDOW_MS = 2500
 /**
+ * How many consecutive seeks may land still out of sync before we stop trying.
+ *
+ * A seek that leaves the same offset behind it is not going to fix it: either
+ * the offset is growing as fast as we close it (a decoder that cannot play at
+ * realtime) or the seek itself keeps knocking it back. Retrying costs a decoder
+ * restart and a frozen picture every time, so a user sees B stuttering and
+ * never catching up — strictly worse than giving up and letting the rate nudge
+ * close what it can, smoothly. Reset by a user seek, which is a fresh
+ * situation.
+ */
+const MAX_SEEK_FAILS = 3
+/**
  * First guess for the lead, before any landing has been observed. Typical
  * seek latency is tens of ms on a desktop and a couple of hundred on a phone,
  * so this splits the difference: the first seek lands close, and the error it
  * leaves teaches the controller the real value.
  */
 const INITIAL_LEAD_MS = 100
-/** Ceiling for the learned lead, so one pathological landing cannot skew it. */
-const MAX_LEAD_MS = 1500
-/** How much of the landing error to fold into the lead. */
-const LEAD_GAIN = 0.9
 /**
- * Largest lead correction a single landing may cause.
+ * Ceiling for the learned lead.
  *
- * A landing error is normally the lead being wrong by exactly that much, so
- * folding in all of it converges in one step. But a large offset means a long
- * jump, and a long jump means a slow seek — so on a slow device the error is
- * large precisely when the lead is most wrong. Rejecting "big" errors as
- * implausible therefore breaks exactly the case that needs help most: the lead
- * never grows, every seek lands the same distance short, and B falls behind for
- * good while freezing on each attempt (a user sees "stuttering, never catches
- * up"). Bounding the step instead keeps a pathological sample (a stall, a seek
- * clamped at the end of the clip) from throwing the lead across its whole range,
- * while a genuinely slow device still reaches the right value in one or two
- * seeks.
+ * This must comfortably exceed the slowest seek the device can produce, or it
+ * silently becomes a permanent offset: the target is only ever `lead` ahead of
+ * A, so a lead shorter than the real latency leaves B exactly that far behind
+ * after every seek, forever — the loop then keeps seeking (freezing B's picture
+ * each time) and never closes the gap. Measured on an emulated slow decoder:
+ * with the cap at 1500ms and a real latency of ~2600ms, B sat ~1.1s behind and
+ * never recovered.
  */
-const MAX_LEARN_STEP_MS = 600
+const MAX_LEAD_MS = 3000
+/**
+ * How much of the landing error to fold into the lead.
+ *
+ * 1.0 on purpose. The error is not a noisy signal to be damped — it is the
+ * measurement: A advanced by exactly the seek's duration while B jumped by
+ * `lead`, so `err = duration - lead`, i.e. the true latency is `lead + err`.
+ * Folding in all of it therefore makes the very next seek land on target. Any
+ * damping leaves the lead short by that fraction, which on a slow device is
+ * enough to trip the seek threshold again — and every extra seek freezes B's
+ * picture for the full latency. Measured at 1.9s latency: gain 0.9 needed three
+ * seeks to converge, gain 1.0 needs two.
+ */
+const LEAD_GAIN = 1
 /** A playing video whose clock has not moved for this long is out of data. */
 const STALL_MS = 300
 /**
@@ -81,13 +107,13 @@ const STALL_MS = 300
  * and judging the offset anyway (a seek that never completes must not wedge the
  * loop).
  *
- * Generous on purpose: on a slow phone a long jump can take a second or more,
- * and giving up early means judging a stale position and issuing the seek
- * again — which aborts the one still in flight. The `seeking` check above is
- * what normally holds the loop, so this only bounds the case where an element
- * reports not-seeking while its clock is still stale.
+ * Generous on purpose: on a slow phone a long jump can take seconds, and giving
+ * up early means judging a stale position and issuing the seek again — which
+ * aborts the one still in flight. The `seeking` check is what normally holds
+ * the loop, so this only bounds the case where an element reports not-seeking
+ * while its clock is still stale.
  */
-const LANDING_TIMEOUT_MS = 2000
+const LANDING_TIMEOUT_MS = 4000
 /** Store writes for the progress bar: 10/s is plenty and avoids 60 re-renders. */
 const TIME_UPDATE_MS = 100
 /**
@@ -125,6 +151,21 @@ export class SyncManager {
   private leadMs = INITIAL_LEAD_MS
   /** A hard seek is awaiting its landing, so nothing may be judged yet. */
   private learnPending = false
+  /** When the outstanding hard seek was issued, to sanity-check its landing. */
+  private seekIssuedAt = 0
+  /**
+   * When the user's own scrub last wrote B. Its landing is a free, real
+   * measurement of this device's seek latency, available before we have issued
+   * any corrective seek.
+   */
+  private userSeekMeasureAt = 0
+  /** True until some landing has taught the lead a real value. */
+  private leadCold = true
+  /**
+   * Consecutive seeks that landed still out of sync. Once this reaches
+   * MAX_SEEK_FAILS the loop stops seeking — see that constant.
+   */
+  private seekFailStreak = 0
   /** Set by seek(), consumed by the loop once both elements have landed. */
   private userSeekPending = false
   /** True between beginSeek() and endSeek() — the pointer is on the bar. */
@@ -162,6 +203,10 @@ export class SyncManager {
     this.lastSeekTarget = NaN
     this.leadMs = INITIAL_LEAD_MS
     this.learnPending = false
+    this.seekIssuedAt = 0
+    this.seekFailStreak = 0
+    this.userSeekMeasureAt = 0
+    this.leadCold = true
     this.userSeekPending = false
     this.dragging = false
     this.dragActiveAt = 0
@@ -224,7 +269,17 @@ export class SyncManager {
     if (this.learnPending) {
       // Only a seek that actually landed teaches us anything: one that hit the
       // timeout left B wherever it was, and its "error" is not a lead error.
-      this.learnFromLanding(a, b, this.advancedAtB > this.requestedSeekAtB)
+      this.learnFromLanding(a, b, this.advancedAtB > this.requestedSeekAtB, now)
+    } else if (this.userSeekMeasureAt > 0 && this.advancedAtB > this.requestedSeekAtB) {
+      // The user's own scrub just landed. That was a real seek on this device,
+      // so how long it took is the lead we need — known before we have issued
+      // a single corrective seek. Seeding from it saves a whole wasted seek
+      // (and its frozen picture) on the first scrub after loading, which is
+      // otherwise the worst case: a cold lead means the first correction lands
+      // a full latency short and has to be repeated.
+      const lat = this.advancedAtB - this.userSeekMeasureAt
+      if (this.leadCold && lat > 0) this.leadMs = Math.min(MAX_LEAD_MS, lat)
+      this.userSeekMeasureAt = 0
     }
 
     if (now - this.lastTimeUpdateAt >= TIME_UPDATE_MS) {
@@ -277,16 +332,22 @@ export class SyncManager {
    * was δ too short; if it landed ahead, δ too long. Note that δ *is* the
    * latency measurement — A advanced by the seek's duration while B jumped by
    * `lead`, so δ = duration - lead. Folding in all of it therefore sets the lead
-   * to the measured latency exactly; the gain just damps timing noise.
+   * to the measured latency exactly, in one step, however slow the device is;
+   * the gain just damps timing noise. Any bound on the step would make a slow
+   * device take several seeks to learn its own latency, and each of those seeks
+   * freezes B's picture.
    */
-  private learnFromLanding(a: HTMLVideoElement, b: HTMLVideoElement, landed: boolean) {
+  private learnFromLanding(a: HTMLVideoElement, b: HTMLVideoElement, landed: boolean, now: number) {
     this.learnPending = false
-    // Only a seek that actually landed teaches us anything: one that hit the
-    // timeout left B wherever it was, and its "error" is not a lead error.
-    if (!landed) return
+    // Only a seek that actually landed, and landed while we were still waiting
+    // for it, teaches us anything. A seek that hit the timeout left B wherever
+    // it was, and its "error" is not a lead error.
+    if (!landed || this.seekIssuedAt <= 0) return
+    if (now - this.seekIssuedAt > LANDING_TIMEOUT_MS) return
     const err = a.currentTime - b.currentTime // > 0 → B landed behind
-    const step = Math.max(-MAX_LEARN_STEP_MS, Math.min(MAX_LEARN_STEP_MS, err * 1000 * LEAD_GAIN))
-    this.leadMs = Math.max(0, Math.min(MAX_LEAD_MS, this.leadMs + step))
+    this.leadCold = false
+    this.seekFailStreak = Math.abs(err) > SEEK_AT ? this.seekFailStreak + 1 : 0
+    this.leadMs = Math.max(0, Math.min(MAX_LEAD_MS, this.leadMs + err * 1000 * LEAD_GAIN))
   }
 
   /** Note when each clock last moved, so a starved element can be spotted. */
@@ -355,6 +416,9 @@ export class SyncManager {
 
   /** Rolling-window rate limit on hard seeks. */
   private canHardSeek(now: number) {
+    // Seeking has stopped helping — see MAX_SEEK_FAILS. Freezing B's picture
+    // again would only make it stutter more without closing the offset.
+    if (this.seekFailStreak >= MAX_SEEK_FAILS) return false
     if (now - this.lastHardSeekAt < HARD_COOLDOWN_MS) return false
     const cutoff = now - SEEK_WINDOW_MS
     while (this.seekStamps.length > 0 && this.seekStamps[0] < cutoff) this.seekStamps.shift()
@@ -368,6 +432,7 @@ export class SyncManager {
     this.lastHardSeekAt = now
     this.seekStamps.push(now)
     this.learnPending = true
+    this.seekIssuedAt = now
     this.requestedSeekAtB = now
     b.currentTime = target
   }
@@ -432,6 +497,8 @@ export class SyncManager {
     // re-locking after this drag is exactly what the budget is for.
     this.seekStamps = []
     this.lastHardSeekAt = -Infinity
+    this.seekFailStreak = 0
+    this.userSeekMeasureAt = now
     a.currentTime = time
     b.currentTime = time
   }
