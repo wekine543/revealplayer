@@ -515,7 +515,7 @@ export class SyncManager {
       a.play().catch(() => undefined), // autoplay block
       b.play().catch(() => undefined),
     ])
-    await this.waitUntilReady()
+    await this.waitReady()
     this.userSeekPending = false
     this.alignNow()
   }
@@ -541,12 +541,20 @@ export class SyncManager {
 
   // ---- Alignment helpers ----
 
-  /** Resolve once both elements can decode at their current position. */
-  private waitUntilReady(timeoutMs = READY_TIMEOUT_MS) {
+  /**
+   * Resolve once both elements are ready at their current position.
+   *
+   * `minReadyState` matters: 2 (HAVE_CURRENT_DATA) means a frame exists, which is
+   * enough to draw one. 3 (HAVE_FUTURE_DATA) means enough is buffered to play
+   * FORWARD, which is what "B has finished loading" actually means — and it is
+   * the difference between a follower that starts on time and one that stalls a
+   * beat behind.
+   */
+  waitReady(minReadyState = 2, timeoutMs = READY_TIMEOUT_MS): Promise<void> {
     const a = this.videoA
     const b = this.videoB
     if (!a || !b) return Promise.resolve()
-    const ready = (v: HTMLVideoElement) => v.readyState >= 2 && !v.seeking
+    const ready = (v: HTMLVideoElement) => v.readyState >= minReadyState && !v.seeking
     if (ready(a) && ready(b)) return Promise.resolve()
 
     return new Promise<void>((resolve) => {
@@ -567,6 +575,51 @@ export class SyncManager {
         a.addEventListener(e, check)
         b.addEventListener(e, check)
       }
+    })
+  }
+
+  /**
+   * Put B exactly where A is, with NO lead, and wait for it to land.
+   *
+   * Only correct while both elements are parked, and that is the whole point of
+   * the pause-then-align route: the lead exists purely to compensate for A
+   * advancing while B's decoder restarts, so a parked A means there is nothing
+   * to compensate for. No latency estimate, no learning, no landing error — the
+   * two clocks end up identical by construction rather than by convergence.
+   *
+   * Nothing is learned from this seek either: with A stationary the landing
+   * error carries no information about how long the seek took.
+   */
+  async alignPaused(landingTimeoutMs = LANDING_TIMEOUT_MS): Promise<void> {
+    const a = this.videoA
+    const b = this.videoB
+    if (!a || !b) return
+    const target = a.currentTime
+    this.learnPending = false
+    this.lastSeekTarget = target
+    this.requestedSeekAtB = performance.now()
+    b.currentTime = target
+    await this.waitForLanding(landingTimeoutMs)
+  }
+
+  /**
+   * Resolve once the outstanding seek on B has visibly landed, or give up.
+   *
+   * The loop already knows how to do this, but that gate is not awaitable, and a
+   * caller that starts both elements needs to be sure before it does.
+   */
+  private waitForLanding(timeoutMs = LANDING_TIMEOUT_MS): Promise<void> {
+    if (!this.videoB) return Promise.resolve()
+    const deadline = performance.now() + timeoutMs
+    return new Promise((resolve) => {
+      const tick = () => {
+        if (this.advancedAtB > this.requestedSeekAtB || performance.now() > deadline) {
+          resolve()
+          return
+        }
+        setTimeout(tick, 16)
+      }
+      tick()
     })
   }
 

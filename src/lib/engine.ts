@@ -5,32 +5,33 @@
 import * as THREE from 'three'
 import { SyncManager } from './SyncManager'
 import { vertexShader, fragmentShader } from './shaders'
+import { isMobileDevice } from './device'
+import { qualityById, defaultQualityId, type QualityId, type QualityLevel } from './quality'
 import type { MediaItem } from '../types'
 
 // ---- Render quality ceilings -------------------------------------------------
-// Single place to tune if a phone is still struggling.
+// The resolution caps are user-selectable (原画 / 1080P / 720P / 480P) and live in
+// lib/quality.ts. What stays here is the ceiling on the DISPLAY side, which is a
+// separate concern: the drawing buffer is capped by device pixel ratio, so a
+// high-DPI phone does not shade four times the pixels for no visible gain.
 const MOBILE_MAX_DPR = 1.5
-const MOBILE_MAX_BUFFER_W = 1280  // 720p, wide edge
-const MOBILE_MAX_BUFFER_H = 720   // 720p, tall edge
 const DESKTOP_MAX_DPR = 2
 /** Never scale below this or the picture turns to mush. */
 const MIN_DPR = 0.5
-
 /**
- * Long-edge cap for a video texture.
+ * Budget for the WHOLE parked resync, in milliseconds — waiting for both
+ * elements to be ready to play forward (readyState >= HAVE_FUTURE_DATA),
+ * aligning, and settling.
  *
- * This is the lever that actually scales with the SOURCE resolution, which the
- * output-resolution caps above do not touch. Using a <video> directly as a
- * texture uploads one full-size image every frame: a 4K frame is ~33 MB, and at
- * 30 fps that is ~1 GB/s of bus traffic, which is what stalls a phone. Scaling
- * the frame into a canvas first so the upload is 720p-sized cuts that by ~9x.
- *
- * Sources already at or below the cap keep the direct video-texture path, so
- * nothing regresses for small clips.
+ * This is a budget, not a per-call timeout: the two waits and the alignment
+ * share it, so the pause the user sees after releasing the bar is bounded by
+ * this number regardless of how slow the follower is. It is deliberately small —
+ * pausing for long enough to notice is worse than a pair that needs one
+ * correction afterwards, which the running loop already knows how to do.
  */
-const TEXTURE_MAX_LONG_EDGE = 1280
+const RESYNC_READY_TIMEOUT_MS = 250
 
-/** Offscreen downscale target, used only when a video exceeds the cap above. */
+/** Offscreen downscale target, used only when a video exceeds the tier's cap. */
 interface VideoScaler {
   canvas: HTMLCanvasElement
   ctx: CanvasRenderingContext2D
@@ -39,16 +40,27 @@ interface VideoScaler {
 /**
  * Build a downscale target for a video, or null when it is already small enough
  * to upload directly.
+ *
+ * This is the lever that actually scales with the SOURCE resolution. Using a
+ * <video> directly as a texture uploads one full-size image every frame: a 4K
+ * frame is ~33 MB, and at 30 fps that is ~1 GB/s of bus traffic, which is what
+ * stalls a phone. Scaling the frame into a canvas first so the upload is
+ * capped-sized cuts that by ~9x at 720P.
+ *
+ * `longEdgeCap` comes from the active quality tier; Infinity means the tier asks
+ * for the source resolution and this returns null so the direct video-texture
+ * path is used.
  */
-function createScaler(video: HTMLVideoElement): VideoScaler | null {
+function createScaler(video: HTMLVideoElement, longEdgeCap: number): VideoScaler | null {
   const srcW = video.videoWidth
   const srcH = video.videoHeight
   if (srcW <= 0 || srcH <= 0) return null
+  if (!isFinite(longEdgeCap)) return null
 
   const longEdge = Math.max(srcW, srcH)
-  if (longEdge <= TEXTURE_MAX_LONG_EDGE) return null
+  if (longEdge <= longEdgeCap) return null
 
-  const scale = TEXTURE_MAX_LONG_EDGE / longEdge
+  const scale = longEdgeCap / longEdge
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(2, Math.round(srcW * scale))
   canvas.height = Math.max(2, Math.round(srcH * scale))
@@ -99,8 +111,8 @@ class Engine {
   // is what actually shows up as stutter).
   private isMobileDevice = false
   private qualityDpr = DESKTOP_MAX_DPR
-  private maxBufferW = Infinity
-  private maxBufferH = Infinity
+  /** Active user-selected tier. Its caps replace the old hardcoded ones. */
+  private quality: QualityLevel = qualityById(defaultQualityId())
   /** Set whenever something visually changed, so the idle loop knows to draw. */
   private dirty = true
   /**
@@ -122,6 +134,32 @@ class Engine {
     return this.isMobileDevice
   }
 
+  /** The active quality tier's id, for the UI to reflect. */
+  get qualityId(): QualityId {
+    return this.quality.id
+  }
+
+  /**
+   * Switch quality tier.
+   *
+   * The caps take effect in two places, and both have to be re-applied for an
+   * already-loaded clip: the drawing buffer (resize) and the per-frame texture
+   * upload (the scaler, which may need creating OR removing — going up a tier
+   * has to hand the slot back to the direct video-texture path).
+   */
+  setQuality(id: QualityId) {
+    if (this.quality.id === id) return
+    this.quality = qualityById(id)
+    console.info(
+      `[RevealPlayer] quality: ${this.quality.label} · ` +
+        `buffer cap ${isFinite(this.quality.bufferW) ? `${this.quality.bufferW}x${this.quality.bufferH}` : 'unlimited'} · ` +
+        `texture cap ${isFinite(this.quality.textureLongEdge) ? `${this.quality.textureLongEdge}px` : 'source'}`,
+    )
+    if (this.elA instanceof HTMLVideoElement) this.applyVideoMeta('A', this.elA)
+    if (this.elB instanceof HTMLVideoElement) this.applyVideoMeta('B', this.elB)
+    this.resize()
+  }
+
   // Callbacks
   onTimeUpdate: ((t: number) => void) | null = null
   onVideoEnded: (() => void) | null = null
@@ -129,22 +167,9 @@ class Engine {
   init(canvas: HTMLCanvasElement) {
     this.canvas = canvas
 
-    // Decide the quality tier once, at startup.
-    const coarsePointer =
-      typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
-    const smallScreen = Math.min(window.innerWidth, window.innerHeight) <= 900
-    const mobileUA = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent)
-    this.isMobileDevice = mobileUA || (coarsePointer && smallScreen)
-
-    if (this.isMobileDevice) {
-      this.qualityDpr = MOBILE_MAX_DPR
-      this.maxBufferW = MOBILE_MAX_BUFFER_W
-      this.maxBufferH = MOBILE_MAX_BUFFER_H
-    } else {
-      this.qualityDpr = DESKTOP_MAX_DPR
-      this.maxBufferW = Infinity
-      this.maxBufferH = Infinity
-    }
+    // Decide the display-side tier once, at startup.
+    this.isMobileDevice = isMobileDevice()
+    this.qualityDpr = this.isMobileDevice ? MOBILE_MAX_DPR : DESKTOP_MAX_DPR
 
     // Renderer
     this.renderer = new THREE.WebGLRenderer({
@@ -164,8 +189,9 @@ class Engine {
     console.info(
       `[RevealPlayer] quality tier: ${this.isMobileDevice ? 'mobile' : 'desktop'} · ` +
         `max DPR ${this.qualityDpr} · ` +
-        `buffer cap ${isFinite(this.maxBufferW) ? `${this.maxBufferW}x${this.maxBufferH}` : 'unlimited'} · ` +
-        `texture cap ${TEXTURE_MAX_LONG_EDGE}px`,
+        `selected ${this.quality.label} · ` +
+        `buffer cap ${isFinite(this.quality.bufferW) ? `${this.quality.bufferW}x${this.quality.bufferH}` : 'unlimited'} · ` +
+        `texture cap ${isFinite(this.quality.textureLongEdge) ? `${this.quality.textureLongEdge}px` : 'source'}`,
     )
 
     // Scene & camera
@@ -229,14 +255,14 @@ class Engine {
     const h = this.canvas.clientHeight
     if (w === 0 || h === 0) return
 
-    // Effective pixel ratio: the device DPR capped by the quality ceiling, then
-    // reduced further so the drawing buffer stays within the resolution limit
-    // (720p on mobile). Shading fewer pixels helps, but note this only bounds
-    // the OUTPUT — the per-frame video upload is bounded separately, by
-    // TEXTURE_MAX_LONG_EDGE.
+    // Effective pixel ratio: the device DPR capped by the display ceiling, then
+    // reduced further so the drawing buffer stays within the selected tier's
+    // resolution limit. Shading fewer pixels helps, but note this only bounds
+    // the OUTPUT — the per-frame video upload is bounded separately, by the
+    // tier's texture cap.
     let dpr = Math.min(window.devicePixelRatio || 1, this.qualityDpr)
-    if (isFinite(this.maxBufferW)) dpr = Math.min(dpr, this.maxBufferW / w)
-    if (isFinite(this.maxBufferH)) dpr = Math.min(dpr, this.maxBufferH / h)
+    if (isFinite(this.quality.bufferW)) dpr = Math.min(dpr, this.quality.bufferW / w)
+    if (isFinite(this.quality.bufferH)) dpr = Math.min(dpr, this.quality.bufferH / h)
     dpr = Math.max(dpr, MIN_DPR)
 
     this.renderer.setPixelRatio(dpr)
@@ -272,15 +298,15 @@ class Engine {
       video.muted = true
       video.playsInline = true
       video.preload = 'auto'
-      video.loop = this._loopEnabled
+      // Native looping stays off — see handleVideoEnded.
+      video.loop = false
       video.src = media.url
 
-      // Handle ended event when not looping
-      video.addEventListener('ended', () => {
-        if (!this._loopEnabled) {
-          this.onVideoEnded?.()
-        }
-      })
+      // Looping is handled here rather than by the browser's own `loop`:
+      // native looping restarts each element independently, so the pair drifts
+      // apart across loops. Restarting from a parked alignment instead puts them
+      // back on the same clock every time.
+      video.addEventListener('ended', this.handleVideoEnded)
 
       // Handle video load errors
       video.addEventListener('error', () => {
@@ -373,10 +399,10 @@ class Engine {
   /**
    * Called once a video's dimensions are known.
    *
-   * Confirms the aspect ratio, and for a clip larger than TEXTURE_MAX_LONG_EDGE
-   * swaps the direct video texture for a CanvasTexture that receives a
-   * scaled-down copy of each frame. Uploading raw frames is the cost that grows
-   * with the source resolution, so this is where large clips are tamed.
+   * Confirms the aspect ratio, and for a clip larger than the active tier's
+   * texture cap swaps the direct video texture for a CanvasTexture that receives
+   * a scaled-down copy of each frame. Uploading raw frames is the cost that
+   * grows with the source resolution, so this is where large clips are tamed.
    */
   private applyVideoMeta(slot: 'A' | 'B', video: HTMLVideoElement) {
     if (!this.material) return
@@ -389,9 +415,44 @@ class Engine {
       else this.material.uniforms.mediaAspectB.value = a
     }
 
-    // Already small enough — keep uploading the video frame directly.
-    const scaler = createScaler(video)
-    if (!scaler) return
+    // Called both when metadata arrives and whenever the user changes quality,
+    // so it has to handle BOTH directions: create the downscale path when the
+    // clip exceeds the tier's cap, and hand the slot back to the direct
+    // video-texture path when it no longer does (going up a tier).
+    const scaler = createScaler(video, this.quality.textureLongEdge)
+    const currentScaler = slot === 'A' ? this.scalerA : this.scalerB
+
+    if (!scaler) {
+      if (currentScaler) {
+        // Drop the CanvasTexture and go back to uploading the video frame.
+        const direct = new THREE.VideoTexture(video)
+        direct.minFilter = THREE.LinearFilter
+        direct.magFilter = THREE.LinearFilter
+        direct.colorSpace = THREE.SRGBColorSpace
+        if (slot === 'A') {
+          if (this.texA) this.texA.dispose()
+          this.texA = direct
+          this.scalerA = null
+          this.material.uniforms.texA.value = direct
+          this.uploadedTimeA = -1
+        } else {
+          if (this.texB) this.texB.dispose()
+          this.texB = direct
+          this.scalerB = null
+          this.material.uniforms.texB.value = direct
+          this.uploadedTimeB = -1
+        }
+        this.dirty = true
+      }
+      // Logged on every call, not just when switching away from the scaled
+      // path: "this clip is uploaded whole" is exactly the fact a quality-tier
+      // test needs to see, and on a first load at 原画 nothing else would say it.
+      console.info(
+        `[RevealPlayer] media ${slot}: ${vw}x${vh} source — uploading full frames ` +
+          `(${this.quality.label}${isFinite(this.quality.textureLongEdge) ? `, cap ${this.quality.textureLongEdge}px` : ''})`,
+      )
+      return
+    }
 
     const tex = new THREE.CanvasTexture(scaler.canvas)
     tex.minFilter = THREE.LinearFilter
@@ -519,6 +580,50 @@ class Engine {
     this.dirty = true
   }
 
+  /**
+   * Park both elements, bring B exactly onto A, then start them together.
+   *
+   * This is the answer to "the misalignment all comes from B loading a beat slow
+   * when playback starts". Correcting a RUNNING pair means aiming ahead of A by
+   * an estimated seek latency, and every attempt freezes B's picture for its
+   * full duration. Correcting a PARKED pair removes both problems:
+   *
+   *   - A is not advancing, so B has as long as it needs to finish its seek and
+   *     fill its buffer — the waiting is invisible instead of showing up as a
+   *     follower that falls behind while it loads.
+   *   - the alignment target does not move, so no lead is needed at all and the
+   *     two clocks end up identical by construction (see alignPaused), rather
+   *     than by a latency estimate converging over several seeks.
+   *
+   * `resume` restores the state the caller found the player in: a scrub while
+   * paused must not start playback as a side effect.
+   */
+  async realignAndResume(resume: boolean, time?: number): Promise<void> {
+    const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
+    const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
+    if (!vA || !vB) return
+
+    if (typeof time === 'number') this.seek(time)
+
+    // Park first. This is what stops A running away from a follower that is
+    // still seeking, and it is why the alignment below needs no lead.
+    this.pause()
+
+    // HAVE_FUTURE_DATA rather than HAVE_CURRENT_DATA: a single decoded frame is
+    // not the same as being able to play on, and it is the difference between
+    // "B has finished loading" and "B has one frame and will stall again".
+    // Whatever the budget, if the follower is still loading when it runs out we
+    // start anyway rather than hold the pause any longer.
+    const deadline = performance.now() + RESYNC_READY_TIMEOUT_MS
+    const left = () => Math.max(0, deadline - performance.now())
+    await this.sync.waitReady(3, left())
+    await this.sync.alignPaused(left())
+    await this.sync.waitReady(3, left())
+
+    if (resume) await this.sync.play()
+    this.dirty = true
+  }
+
   seek(time: number) {
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
     const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
@@ -542,6 +647,14 @@ class Engine {
     this.sync.endSeek()
   }
 
+  /** Volume and mute are per slot, so the two sources can be balanced. */
+  setVolume(slot: 'A' | 'B', volume: number, muted: boolean) {
+    const el = slot === 'A' ? this.elA : this.elB
+    if (!(el instanceof HTMLVideoElement)) return
+    el.volume = volume
+    el.muted = muted
+  }
+
   setRate(rate: number) {
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
     const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
@@ -553,12 +666,27 @@ class Engine {
     }
   }
 
+  /**
+   * Restart from the top, aligned, when either clip finishes.
+   *
+   * "Either", not just A: if B is the shorter clip it would otherwise sit frozen
+   * at its last frame while A plays on, which looks like a bug.
+   */
+  private handleVideoEnded = () => {
+    if (this._loopEnabled) {
+      void this.realignAndResume(true, 0)
+      return
+    }
+    this.onVideoEnded?.()
+  }
+
   setLoop(enabled: boolean) {
     this._loopEnabled = enabled
     const vA = this.elA instanceof HTMLVideoElement ? this.elA : null
     const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
-    if (vA) vA.loop = enabled
-    if (vB) vB.loop = enabled
+    // Native looping stays off — handleVideoEnded restarts both together.
+    if (vA) vA.loop = false
+    if (vB) vB.loop = false
   }
 
   // ---- Mouse interaction ----

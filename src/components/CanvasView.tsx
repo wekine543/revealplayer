@@ -2,11 +2,22 @@ import { useEffect, useRef } from 'react'
 import { engine } from '../lib/engine'
 import { useStore } from '../store/useStore'
 
-export function CanvasView() {
+/**
+ * `fill` releases the aspect-ratio cap so the canvas covers its container
+ * instead of sizing itself to a fraction of the viewport height. Web fullscreen
+ * uses it: the picture is then letterboxed inside the canvas by the shader, the
+ * same way a video player fills a screen.
+ */
+export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const mediaA = useStore((s) => s.mediaA)
   const mediaB = useStore((s) => s.mediaB)
   const maskSettings = useStore((s) => s.maskSettings)
+  const quality = useStore((s) => s.quality)
+  const volumeA = useStore((s) => s.volumeA)
+  const volumeB = useStore((s) => s.volumeB)
+  const mutedA = useStore((s) => s.mutedA)
+  const mutedB = useStore((s) => s.mutedB)
   const setCurrentTime = useStore((s) => s.setCurrentTime)
   const setDuration = useStore((s) => s.setDuration)
   const setIsPlaying = useStore((s) => s.setIsPlaying)
@@ -14,11 +25,17 @@ export function CanvasView() {
   // Init engine
   useEffect(() => {
     if (!canvasRef.current) return
+    // The persisted tier has to be applied BEFORE init: init is what logs the
+    // quality tier and builds the renderer, and if it runs first it reports (and
+    // briefly renders at) the device default instead of the user's choice.
+    // setQuality is safe before init — it only sets the field, because resize()
+    // bails out while there is no renderer.
+    engine.setQuality(useStore.getState().quality)
     engine.init(canvasRef.current)
     engine.onTimeUpdate = (t) => setCurrentTime(t)
     engine.onVideoEnded = () => setIsPlaying(false)
 
-    // Restore persisted settings to engine
+    // Restore the rest of the persisted settings.
     const state = useStore.getState()
     engine.setLoop(state.isLooping)
     engine.setRate(state.playbackRate)
@@ -43,15 +60,20 @@ export function CanvasView() {
   // Sync media A changes to engine
   useEffect(() => {
     engine.setMedia('A', mediaA)
-    // Apply persisted playback rate to new video element
-    engine.setRate(useStore.getState().playbackRate)
+    // A newly created element ignores the store, so the persisted per-slot
+    // settings have to be pushed onto it again.
+    const st = useStore.getState()
+    engine.setRate(st.playbackRate)
+    engine.setVolume('A', st.volumeA, st.mutedA)
     setIsPlaying(false)
   }, [mediaA, setIsPlaying])
 
   // Sync media B changes to engine
   useEffect(() => {
     engine.setMedia('B', mediaB)
-    engine.setRate(useStore.getState().playbackRate)
+    const st = useStore.getState()
+    engine.setRate(st.playbackRate)
+    engine.setVolume('B', st.volumeB, st.mutedB)
     setIsPlaying(false)
   }, [mediaB, setIsPlaying])
 
@@ -66,6 +88,15 @@ export function CanvasView() {
   useEffect(() => {
     engine.updateMaskUniforms(maskSettings)
   }, [maskSettings])
+
+  // Quality changes re-apply the caps and rebuild the texture path. Harmless on
+  // mount: setQuality is a no-op when the tier has not actually changed.
+  useEffect(() => {
+    engine.setQuality(quality)
+  }, [quality])
+
+  useEffect(() => { engine.setVolume('A', volumeA, mutedA) }, [volumeA, mutedA])
+  useEffect(() => { engine.setVolume('B', volumeB, mutedB) }, [volumeB, mutedB])
 
   // Mouse events
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -130,7 +161,9 @@ export function CanvasView() {
 
   return (
     <div
-      className="canvas-fit relative bg-black rounded-lg sm:rounded-xl overflow-hidden shadow-2xl"
+      className={`canvas-fit relative bg-black overflow-hidden shadow-2xl ${
+        fill ? 'canvas-fill' : 'rounded-lg sm:rounded-xl'
+      }`}
       style={{ '--ar': String(mediaAspect) } as React.CSSProperties}
     >
       <canvas

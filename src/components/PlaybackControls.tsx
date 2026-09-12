@@ -1,29 +1,72 @@
 import { engine } from '../lib/engine'
 import { useStore } from '../store/useStore'
 import { formatTime } from '../lib/media'
+import { QUALITY_LEVELS, type QualityId } from '../lib/quality'
 import { useEffect, useRef, useCallback } from 'react'
 
-export function PlaybackControls() {
+/**
+ * `webFullscreen` is the Bilibili-style CSS layout mode: the surrounding chrome
+ * is gone, so this bar keeps only what is needed to drive playback — play/pause,
+ * the clock, the progress bar and the way out. Volume, rate, loop, quality and
+ * screenshot are hidden, and the quality picker is deliberately among them
+ * because changing resolution mid-fullscreen is not a thing you reach for.
+ */
+export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: boolean } = {}) {
   const isPlaying = useStore((s) => s.isPlaying)
   const setIsPlaying = useStore((s) => s.setIsPlaying)
   const currentTime = useStore((s) => s.currentTime)
   const duration = useStore((s) => s.duration)
-  const volume = useStore((s) => s.volume)
-  const isMuted = useStore((s) => s.isMuted)
+  const volumeA = useStore((s) => s.volumeA)
+  const volumeB = useStore((s) => s.volumeB)
+  const mutedA = useStore((s) => s.mutedA)
+  const mutedB = useStore((s) => s.mutedB)
   const playbackRate = useStore((s) => s.playbackRate)
   const isLooping = useStore((s) => s.isLooping)
-  const setVolume = useStore((s) => s.setVolume)
-  const setMuted = useStore((s) => s.setMuted)
+  const setVolumeA = useStore((s) => s.setVolumeA)
+  const setVolumeB = useStore((s) => s.setVolumeB)
+  const setMutedA = useStore((s) => s.setMutedA)
+  const setMutedB = useStore((s) => s.setMutedB)
   const setPlaybackRate = useStore((s) => s.setPlaybackRate)
   const setLooping = useStore((s) => s.setLooping)
   const mediaA = useStore((s) => s.mediaA)
   const mediaB = useStore((s) => s.mediaB)
+  const quality = useStore((s) => s.quality)
+  const setQuality = useStore((s) => s.setQuality)
+  const setWebFullscreen = useStore((s) => s.setWebFullscreen)
 
   const hasVideo = mediaA?.type === 'video' || mediaB?.type === 'video'
   const progressRef = useRef<HTMLDivElement>(null)
   const isDraggingRef = useRef(false)
 
   // ---- Seek helper ----
+  /**
+   * A drag pauses the pair and, on release, aligns them while parked and starts
+   * them together.
+   *
+   * Why pause at all: the misalignment was traced to B loading a beat slow at the
+   * start of playback. Correcting a RUNNING pair means aiming ahead of a moving
+   * target by an estimated seek latency, and every attempt freezes B's picture
+   * for its whole duration. Parked, A cannot run away, B gets as long as it needs
+   * to finish seeking and buffering, and the alignment needs no estimate at all.
+   */
+  const wasPlayingRef = useRef(false)
+
+  const beginDrag = useCallback(() => {
+    wasPlayingRef.current = useStore.getState().isPlaying
+    isDraggingRef.current = true
+    // Park the master so the follower is not chasing it while it loads.
+    engine.pause()
+    engine.beginSeek()
+  }, [])
+
+  const finishDrag = useCallback(() => {
+    isDraggingRef.current = false
+    engine.endSeek()
+    // Resume only if it was playing when the drag started — a scrub while
+    // paused must stay paused.
+    void engine.realignAndResume(wasPlayingRef.current)
+  }, [])
+
   const seekTo = useCallback((clientX: number) => {
     if (!progressRef.current || duration === 0) return
     const rect = progressRef.current.getBoundingClientRect()
@@ -49,7 +92,7 @@ export function PlaybackControls() {
     if (!isDraggingRef.current) return
 
     const onMove = (e: MouseEvent) => seekTo(e.clientX)
-    const onUp = () => { isDraggingRef.current = false; engine.endSeek() }
+    const onUp = () => finishDrag()
 
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
@@ -57,18 +100,16 @@ export function PlaybackControls() {
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
-  }, [seekTo])
+  }, [seekTo, finishDrag])
 
   const handleProgressDown = (e: React.MouseEvent) => {
     e.preventDefault()
-    isDraggingRef.current = true
-    engine.beginSeek()
+    beginDrag()
     seekTo(e.clientX)
     // Manually attach since the effect above only fires on re-render
     const onMove = (ev: MouseEvent) => seekTo(ev.clientX)
     const onUp = () => {
-      isDraggingRef.current = false
-      engine.endSeek()
+      finishDrag()
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
@@ -76,29 +117,29 @@ export function PlaybackControls() {
     document.addEventListener('mouseup', onUp)
   }
 
-  // ---- Volume ----
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ---- Volume, one per slot ----
+  const isVideoA = mediaA?.type === 'video'
+  const isVideoB = mediaB?.type === 'video'
+
+  const handleVolumeChange = (slot: 'A' | 'B', e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value)
-    setVolume(v)
-    setMuted(v === 0)
-    const applyVol = (el: HTMLElement | null) => {
-      if (el instanceof HTMLVideoElement) {
-        el.volume = v
-        el.muted = v === 0
-      }
+    if (slot === 'A') {
+      setVolumeA(v)
+      setMutedA(v === 0)
+    } else {
+      setVolumeB(v)
+      setMutedB(v === 0)
     }
-    applyVol(engine.elA)
-    applyVol(engine.elB)
+    engine.setVolume(slot, v, v === 0)
   }
 
-  const toggleMute = () => {
-    const newMuted = !isMuted
-    setMuted(newMuted)
-    const apply = (el: HTMLElement | null) => {
-      if (el instanceof HTMLVideoElement) el.muted = newMuted
-    }
-    apply(engine.elA)
-    apply(engine.elB)
+  const toggleMute = (slot: 'A' | 'B') => {
+    const muted = slot === 'A' ? mutedA : mutedB
+    const volume = slot === 'A' ? volumeA : volumeB
+    const newMuted = !muted
+    if (slot === 'A') setMutedA(newMuted)
+    else setMutedB(newMuted)
+    engine.setVolume(slot, volume, newMuted)
   }
 
   // ---- Playback rate ----
@@ -109,6 +150,10 @@ export function PlaybackControls() {
   }
 
   // ---- Loop ----
+  const handleQualityChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setQuality(e.target.value as QualityId)
+  }
+
   const toggleLoop = () => {
     const newLoop = !isLooping
     setLooping(newLoop)
@@ -137,18 +182,6 @@ export function PlaybackControls() {
     link.href = dataUrl
     link.click()
   }
-
-  // ---- Sync volume/mute when media loads ----
-  useEffect(() => {
-    const applyVol = (el: HTMLElement | null) => {
-      if (el instanceof HTMLVideoElement) {
-        el.volume = volume
-        el.muted = isMuted
-      }
-    }
-    applyVol(engine.elA)
-    applyVol(engine.elB)
-  }, [mediaA, mediaB, volume, isMuted])
 
   // ---- Keyboard shortcuts ----
   useEffect(() => {
@@ -217,8 +250,7 @@ export function PlaybackControls() {
           onTouchStart={(e) => {
             const t = e.touches[0]
             if (!t) return
-            isDraggingRef.current = true
-            engine.beginSeek()
+            beginDrag()
             seekTo(t.clientX)
           }}
           onTouchMove={(e) => {
@@ -226,13 +258,13 @@ export function PlaybackControls() {
             if (!t) return
             seekTo(t.clientX)
           }}
-          onTouchEnd={() => { isDraggingRef.current = false; engine.endSeek() }}
+          onTouchEnd={() => finishDrag()}
           // The browser sends this instead of touchend when it takes the
           // gesture over (a second finger, a system gesture, the touch being
           // cancelled). Without it the drag never ends and the sync loop stays
           // parked. SyncManager also ends a silent drag on its own, so this is
           // the fast path, not the only one.
-          onTouchCancel={() => { isDraggingRef.current = false; engine.endSeek() }}
+          onTouchCancel={() => finishDrag()}
         >
           <div
             className="absolute top-0 left-0 h-full rounded-full bg-brand-400 transition-colors group-hover:bg-brand-300"
@@ -243,39 +275,65 @@ export function PlaybackControls() {
             style={{ left: `${progress}%` }}
           />
         </div>
+
+        {/* Web-fullscreen exit — the only extra control this mode keeps */}
+        {webFullscreen && (
+          <button
+            onClick={() => setWebFullscreen(false)}
+            className="flex-shrink-0 flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-white/10 hover:bg-white/20 text-gray-200 transition-colors"
+            title="Exit web fullscreen (Esc)"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9V4H4m0 0l5 5m6-5h5v5m0 0l-5-5M9 15v5H4m0 0l5-5m6 5h5v-5m0 0l-5 5" />
+            </svg>
+            <span className="hidden sm:inline">退出网页全屏</span>
+          </button>
+        )}
       </div>
 
-      {/* Settings group — centers below the transport row on mobile */}
-      <div className="flex items-center justify-center gap-3 w-full sm:w-auto">
-        {/* Volume */}
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={toggleMute}
-            disabled={!hasVideo}
-            className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors p-1.5 -m-0.5"
-            title={isMuted ? 'Unmute' : 'Mute'}
-          >
-            {isMuted || volume === 0 ? (
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M3 9v6h4l5 5V4L7 9H3zm13.59 3l2.7-2.7-1.41-1.41L15 11.59 12.41 9 11 10.41 13.59 13 11 15.59 12.41 17 15 14.41 17.59 17l1.41-1.41L15.59 13z" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.06c1.48-.73 2.5-2.25 2.5-4.03z" />
-              </svg>
-            )}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={isMuted ? 0 : volume}
-            onChange={handleVolumeChange}
-            disabled={!hasVideo}
-            className="w-16 sm:w-16 h-1 accent-brand-400 disabled:opacity-30"
-          />
-        </div>
+      {/* Settings group — centers below the transport row on mobile.
+          Hidden entirely in web fullscreen: the point of that mode is to leave
+          the picture and the transport and nothing else. */}
+      <div
+        className={`items-center justify-center gap-3 w-full sm:w-auto ${webFullscreen ? 'hidden' : 'flex'}`}
+      >
+        {/* Volume — separate per slot, so the two sources can be balanced */}
+        {(['A', 'B'] as const).map((slot) => {
+          const isVideo = slot === 'A' ? isVideoA : isVideoB
+          const volume = slot === 'A' ? volumeA : volumeB
+          const muted = slot === 'A' ? mutedA : mutedB
+          return (
+            <div key={slot} className="flex items-center gap-1">
+              <span className="text-[10px] font-bold text-gray-500 w-2 select-none">{slot}</span>
+              <button
+                onClick={() => toggleMute(slot)}
+                disabled={!isVideo}
+                className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors p-1 -m-0.5"
+                title={muted ? `Unmute media ${slot}` : `Mute media ${slot}`}
+              >
+                {muted || volume === 0 ? (
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.59 3l2.7-2.7-1.41-1.41L15 11.59 12.41 9 11 10.41 13.59 13 11 15.59 12.41 17 15 14.41 17.59 17l1.41-1.41L15.59 13z" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.06c1.48-.73 2.5-2.25 2.5-4.03z" />
+                  </svg>
+                )}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : volume}
+                onChange={(e) => handleVolumeChange(slot, e)}
+                disabled={!isVideo}
+                className="w-11 sm:w-16 h-1 accent-brand-400 disabled:opacity-30"
+              />
+            </div>
+          )
+        })}
 
         {/* Playback rate */}
         <select
@@ -301,6 +359,32 @@ export function PlaybackControls() {
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.582m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+
+        {/* Quality — 原画 / 1080P / 720P / 480P */}
+        <select
+          value={quality}
+          onChange={handleQualityChange}
+          className="text-xs bg-black/30 text-gray-300 border border-white/10 rounded-md px-1.5 py-1.5 sm:py-1 disabled:opacity-30 focus:outline-none focus:border-brand-400 cursor-pointer"
+          title="Render quality"
+        >
+          {QUALITY_LEVELS.map((q) => (
+            <option key={q.id} value={q.id}>
+              {q.label}
+            </option>
+          ))}
+        </select>
+
+        {/* Web fullscreen — CSS layout mode, not the native Fullscreen API */}
+        <button
+          onClick={() => setWebFullscreen(true)}
+          className="text-gray-400 hover:text-white transition-colors p-1.5"
+          title="Web fullscreen (fill the page, no browser chrome)"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5h16v14H4z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 9h16M4 15h16" />
           </svg>
         </button>
 

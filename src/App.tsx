@@ -6,6 +6,7 @@ import { MaskControls } from './components/MaskControls'
 import { FavoriteButton } from './components/FavoriteButton'
 import { FavoriteList } from './components/FavoriteList'
 import { engine } from './lib/engine'
+import { qualityById } from './lib/quality'
 import { useStore } from './store/useStore'
 
 /** Collapsible section — controlled by store for persistence */
@@ -53,6 +54,32 @@ export default function App() {
     setLowPower(engine.lowPowerMode)
   }, [])
 
+  // ---- Web fullscreen ----
+  // A CSS layout mode, NOT the Fullscreen API: the page stays a page, but
+  // everything except the picture and the transport is removed and the layout is
+  // pinned to the viewport, so no scrollbar can appear.
+  const isWebFullscreen = useStore((s) => s.isWebFullscreen)
+  const setWebFullscreen = useStore((s) => s.setWebFullscreen)
+  const quality = useStore((s) => s.quality)
+
+  useEffect(() => {
+    if (!isWebFullscreen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setWebFullscreen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isWebFullscreen, setWebFullscreen])
+
+  // Belt and braces for "no scrollbar": the layout below is already pinned with
+  // `fixed inset-0`, but locking the root keeps any stray margin or focus scroll
+  // from reintroducing one.
+  useEffect(() => {
+    const root = document.documentElement
+    root.classList.toggle('web-fs', isWebFullscreen)
+    return () => root.classList.remove('web-fs')
+  }, [isWebFullscreen])
+
   // Persisted UI state
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed)
@@ -62,8 +89,15 @@ export default function App() {
   const setFavoritesCollapsed = useStore((s) => s.setFavoritesCollapsed)
 
   return (
-    <div className="min-h-screen-safe flex flex-col bg-[#0a0b0f] safe-x">
-      {/* Header */}
+    <div
+      className={
+        isWebFullscreen
+          ? 'fixed inset-0 z-50 flex flex-col bg-black overflow-hidden safe-x safe-bottom'
+          : 'min-h-screen-safe flex flex-col bg-[#0a0b0f] safe-x'
+      }
+    >
+      {/* Header — hidden in web fullscreen */}
+      {!isWebFullscreen && (
       <header className="flex items-center justify-between gap-2 px-3 sm:px-5 py-2.5 sm:py-3 border-b border-white/5">
         <div className="flex items-center gap-2 min-w-0">
           {/* Logo */}
@@ -92,23 +126,37 @@ export default function App() {
           </button>
         </div>
       </header>
+      )}
 
-      {/* Main content — stacks vertically on mobile, side-by-side on desktop */}
-      <main className="flex-1 flex flex-col lg:flex-row gap-2.5 lg:gap-4 p-2.5 sm:p-4 max-w-7xl mx-auto w-full">
+      {/* Main content — stacks vertically on mobile, side-by-side on desktop.
+          In web fullscreen it becomes a single column that fills the viewport. */}
+      <main
+        className={
+          isWebFullscreen
+            ? 'flex-1 min-h-0 flex flex-col'
+            : 'flex-1 flex flex-col lg:flex-row gap-2.5 lg:gap-4 p-2.5 sm:p-4 max-w-7xl mx-auto w-full'
+        }
+      >
         {/* Primary: Canvas + Controls */}
-        <div className="flex-1 flex flex-col gap-2.5 sm:gap-3 min-w-0">
-          <CanvasView />
-          <PlaybackControls />
+        <div
+          className={
+            isWebFullscreen
+              ? 'flex-1 min-h-0 flex flex-col gap-2 p-2'
+              : 'flex-1 flex flex-col gap-2.5 sm:gap-3 min-w-0'
+          }
+        >
+          <CanvasView fill={isWebFullscreen} />
+          <PlaybackControls webFullscreen={isWebFullscreen} />
 
           {/* Media loaders — kept on one row at every width so they take as
               little vertical space as possible and the canvas gets the rest */}
-          <div className="grid grid-cols-2 gap-2 sm:gap-3">
+          <div className={`grid grid-cols-2 gap-2 sm:gap-3 ${isWebFullscreen ? 'hidden' : ''}`}>
             <MediaLoader slot="A" />
             <MediaLoader slot="B" />
           </div>
 
           {/* Swap button */}
-          <div className="flex justify-center">
+          <div className={`justify-center ${isWebFullscreen ? 'hidden' : 'flex'}`}>
             <button
               onClick={swapMedia}
               disabled={!mediaA || !mediaB}
@@ -123,7 +171,7 @@ export default function App() {
         </div>
 
         {/* Secondary: Collapsible sidebar — full width below content on mobile */}
-        {!sidebarCollapsed && (
+        {!sidebarCollapsed && !isWebFullscreen && (
           <div className="w-full lg:w-64 flex flex-col gap-3 flex-shrink-0">
             {/* Mask Controls — collapsible */}
             <CollapsibleSection
@@ -146,7 +194,8 @@ export default function App() {
         )}
       </main>
 
-      {/* Footer */}
+      {/* Footer — hidden in web fullscreen */}
+      {!isWebFullscreen && (
       <footer className="px-3 sm:px-5 py-2 border-t border-white/5 safe-bottom">
         <p className="text-[10px] sm:text-xs text-gray-600 text-center leading-relaxed">
           <span className="hidden sm:inline">
@@ -158,10 +207,14 @@ export default function App() {
         </p>
         {lowPower && (
           <p className="text-[10px] text-gray-700 text-center mt-0.5">
-            Mobile power saving on · 720p render · video textures scaled to 1280px
+            Mobile power saving on · quality {qualityById(quality).label}
+            {isFinite(qualityById(quality).textureLongEdge)
+              ? ` · video textures capped at ${qualityById(quality).textureLongEdge}px`
+              : ' · video textures at source resolution'}
           </p>
         )}
       </footer>
+      )}
     </div>
   )
 }

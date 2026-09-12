@@ -133,6 +133,34 @@
     margin: 0;
   }
 
+  /*
+   * Web fullscreen ("网页全屏") — same release, but driven by a class rather than
+   * the Fullscreen API. The container is `fixed inset-0`, so the canvas fills it
+   * and the media is letterboxed INSIDE the canvas by the shader, which is how a
+   * video player fills a screen.
+   */
+  .canvas-fit.canvas-fill {
+    aspect-ratio: auto;
+    max-width: none;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    border-radius: 0;
+  }
+
+  /*
+   * Web fullscreen locks the page itself. The layout is already pinned with
+   * `fixed inset-0`, but a scrollbar can still appear from the root's own
+   * overflow (a stray margin, a focused element scrolled into view), and the
+   * whole point of the mode is that the page fits exactly.
+   */
+  html.web-fs,
+  html.web-fs body {
+    overflow: hidden;
+    height: 100%;
+    overscroll-behavior: none;
+  }
+
   /* Range slider styling */
   input[type="range"] {
     -webkit-appearance: none;

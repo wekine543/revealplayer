@@ -2,19 +2,29 @@
  * Persistence layer — saves user preferences to localStorage and restores
  * them on the next session.
  *
- * Persisted fields: maskSettings, isLooping, volume, isMuted, playbackRate,
- * sidebarCollapsed, maskCollapsed, favoritesCollapsed.
+ * Persisted fields: maskSettings, isLooping, volumeA/volumeB, mutedA/mutedB,
+ * playbackRate, quality, sidebarCollapsed, maskCollapsed, favoritesCollapsed.
  */
 import type { MaskSettings } from '../types'
+import { defaultQualityId, type QualityId } from './quality'
 
 const STORAGE_KEY = 'revealplayer_settings'
 
 export interface PersistedSettings {
   maskSettings: MaskSettings
   isLooping: boolean
-  volume: number
-  isMuted: boolean
+  /** Volume is per slot — the two sources often need different levels. */
+  volumeA: number
+  volumeB: number
+  mutedA: boolean
+  mutedB: boolean
+  /** Legacy single-track values, kept only to migrate settings saved by an
+   *  older build. Never read by the app. */
+  volume?: number
+  isMuted?: boolean
   playbackRate: number
+  /** Render quality tier — user-selectable, restored on the next visit. */
+  quality: QualityId
   sidebarCollapsed: boolean
   maskCollapsed: boolean
   favoritesCollapsed: boolean
@@ -30,9 +40,14 @@ const defaults: PersistedSettings = {
     borderOpacity: 0.8,
   },
   isLooping: false,
-  volume: 1,
-  isMuted: true,
+  volumeA: 1,
+  volumeB: 1,
+  mutedA: true,
+  mutedB: true,
   playbackRate: 1,
+  // Placeholder: the real default depends on the device, so loadSettings()
+  // resolves it rather than baking one in here.
+  quality: 'source',
   sidebarCollapsed: false,
   maskCollapsed: false,
   favoritesCollapsed: false,
@@ -50,13 +65,22 @@ export function loadSettings(): PersistedSettings {
     if (!raw) {
       // First run — collapse the side panel by default on small screens
       // so the canvas gets maximum room.
-      return { ...defaults, sidebarCollapsed: isMobileViewport() }
+      return { ...defaults, quality: defaultQualityId(), sidebarCollapsed: isMobileViewport() }
     }
     const parsed = JSON.parse(raw) as Partial<PersistedSettings>
     // Deep-merge maskSettings so new fields added in updates get defaults
     return {
       ...defaults,
       ...parsed,
+      // A settings file written before this field existed has no quality, and
+      // an unknown id must not leave the engine on a tier that does not exist.
+      quality: parsed.quality ?? defaultQualityId(),
+      // Someone upgrading from the single-track build had one volume and one
+      // mute flag; use them for both slots rather than resetting to defaults.
+      volumeA: parsed.volumeA ?? parsed.volume ?? defaults.volumeA,
+      volumeB: parsed.volumeB ?? parsed.volume ?? defaults.volumeB,
+      mutedA: parsed.mutedA ?? parsed.isMuted ?? defaults.mutedA,
+      mutedB: parsed.mutedB ?? parsed.isMuted ?? defaults.mutedB,
       maskSettings: { ...defaults.maskSettings, ...(parsed.maskSettings ?? {}) },
     }
   } catch {
