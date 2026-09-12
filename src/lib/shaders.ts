@@ -26,6 +26,14 @@ export const fragmentShader = /* glsl */`
   uniform float mediaAspectA;   // mediaA width/height
   uniform float mediaAspectB;   // mediaB width/height
 
+  // Grid ("both at once") mode. See src/lib/grid.ts for the layout maths —
+  // these four values are the result of it, precomputed on the CPU.
+  uniform bool gridMode;
+  uniform bool gridHorizontal;  // true: A left / B right. false: A top / B bottom
+  uniform float gridAspect;     // ratio of the two cells joined together
+  uniform float gridSplit;      // fraction of the split axis taken by A
+  uniform bool gridHasBoth;     // false: a single item gets the whole frame
+
   varying vec2 vUv;
 
   // Adjust UV for "contain" fit: preserve media aspect ratio within canvas
@@ -43,8 +51,79 @@ export const fragmentShader = /* glsl */`
     return adjusted;
   }
 
+  // Is this UV inside the unit box? Used for the letterbox area and, in grid
+  // mode, for each cell.
+  float inside(vec2 uv) {
+    return step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+  }
+
   void main() {
     const vec4 bgColor = vec4(0.05, 0.05, 0.06, 1.0);
+
+    // ---- Grid mode: both media, whole, in two cells ----
+    // The two cells are joined into one box of gridAspect, which is then
+    // fitted into the canvas exactly the way a single clip is. Because the box
+    // is sized from the two clips' own ratios, each cell already matches its
+    // media and nothing is cropped or stretched.
+    if (gridMode) {
+      if (!hasTexA && !hasTexB) {
+        gl_FragColor = bgColor;
+        return;
+      }
+
+      if (!gridHasBoth) {
+        // Only one slot loaded — give it the entire frame rather than half of
+        // it plus an empty panel. Sampled in a branch rather than mixed, so the
+        // empty slot's sampler is never touched.
+        if (hasTexA) {
+          vec2 uv = containUV(vUv, mediaAspectA, aspectRatio);
+          gl_FragColor = mix(bgColor, texture2D(texA, uv), inside(uv));
+        } else {
+          vec2 uv = containUV(vUv, mediaAspectB, aspectRatio);
+          gl_FragColor = mix(bgColor, texture2D(texB, uv), inside(uv));
+        }
+        return;
+      }
+
+      vec2 g = containUV(vUv, gridAspect, aspectRatio);
+      if (inside(g) < 0.5) {
+        gl_FragColor = bgColor;
+        return;
+      }
+
+      vec2 cellA;
+      vec2 cellB;
+      float aspectCellA;
+      float aspectCellB;
+      bool inFirst;
+
+      if (gridHorizontal) {
+        // A on the left half of the split, B on the right.
+        cellA = vec2(g.x / gridSplit, g.y);
+        cellB = vec2((g.x - gridSplit) / (1.0 - gridSplit), g.y);
+        aspectCellA = gridAspect * gridSplit;
+        aspectCellB = gridAspect * (1.0 - gridSplit);
+        inFirst = g.x < gridSplit;
+      } else {
+        // A on top (UV y grows upward), B below.
+        cellA = vec2(g.x, (g.y - gridSplit) / (1.0 - gridSplit));
+        cellB = vec2(g.x, g.y / gridSplit);
+        aspectCellA = gridAspect / (1.0 - gridSplit);
+        aspectCellB = gridAspect / gridSplit;
+        inFirst = g.y >= gridSplit;
+      }
+
+      // Contain inside the cell: a no-op for a correct layout, but it keeps a
+      // media whose ratio is not what the layout assumed — unknown dimensions,
+      // a metadata change — from being stretched.
+      cellA = containUV(cellA, mediaAspectA, aspectCellA);
+      cellB = containUV(cellB, mediaAspectB, aspectCellB);
+
+      vec4 cA = mix(bgColor, texture2D(texA, cellA), inside(cellA));
+      vec4 cB = mix(bgColor, texture2D(texB, cellB), inside(cellB));
+      gl_FragColor = inFirst ? cA : cB;
+      return;
+    }
 
     // Compute aspect-ratio-corrected UVs for each texture
     vec2 uvA = hasTexA ? containUV(vUv, mediaAspectA, aspectRatio) : vUv;

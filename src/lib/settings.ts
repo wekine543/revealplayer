@@ -5,7 +5,7 @@
  * Persisted fields: maskSettings, isLooping, volumeA/volumeB, mutedA/mutedB,
  * playbackRate, quality, sidebarCollapsed, maskCollapsed, favoritesCollapsed.
  */
-import type { MaskSettings } from '../types'
+import type { MaskSettings, ViewMode } from '../types'
 import { defaultQualityId, type QualityId } from './quality'
 
 const STORAGE_KEY = 'revealplayer_settings'
@@ -25,6 +25,8 @@ export interface PersistedSettings {
   playbackRate: number
   /** Render quality tier — user-selectable, restored on the next visit. */
   quality: QualityId
+  /** Mask (B revealed through A) or grid (both shown whole). */
+  viewMode: ViewMode
   sidebarCollapsed: boolean
   maskCollapsed: boolean
   favoritesCollapsed: boolean
@@ -48,6 +50,8 @@ const defaults: PersistedSettings = {
   // Placeholder: the real default depends on the device, so loadSettings()
   // resolves it rather than baking one in here.
   quality: 'source',
+  // The reveal mask is what the app is named for, so it stays the default.
+  viewMode: 'mask',
   sidebarCollapsed: false,
   maskCollapsed: false,
   favoritesCollapsed: false,
@@ -75,6 +79,8 @@ export function loadSettings(): PersistedSettings {
       // A settings file written before this field existed has no quality, and
       // an unknown id must not leave the engine on a tier that does not exist.
       quality: parsed.quality ?? defaultQualityId(),
+      // An unknown value must not leave the app in a mode it cannot render.
+      viewMode: parsed.viewMode === 'grid' ? 'grid' : 'mask',
       // Someone upgrading from the single-track build had one volume and one
       // mute flag; use them for both slots rather than resetting to defaults.
       volumeA: parsed.volumeA ?? parsed.volume ?? defaults.volumeA,

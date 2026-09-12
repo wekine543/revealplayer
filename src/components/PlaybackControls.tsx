@@ -32,6 +32,8 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
   const mediaB = useStore((s) => s.mediaB)
   const quality = useStore((s) => s.quality)
   const setQuality = useStore((s) => s.setQuality)
+  const viewMode = useStore((s) => s.viewMode)
+  const setViewMode = useStore((s) => s.setViewMode)
   const setWebFullscreen = useStore((s) => s.setWebFullscreen)
 
   const hasVideo = mediaA?.type === 'video' || mediaB?.type === 'video'
@@ -275,6 +277,39 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
             style={{ left: `${progress}%` }}
           />
         </div>
+
+        {/* View mode — mask (B revealed through A) or grid (both whole).
+            Kept in the transport row rather than with the settings below so it
+            survives web fullscreen: how you look at the two clips is a playback
+            control, not a preference you tune once. */}
+        <button
+          onClick={() => {
+            const next = viewMode === 'grid' ? 'mask' : 'grid'
+            setViewMode(next)
+            engine.setGridMode(next === 'grid')
+          }}
+          className={`flex-shrink-0 flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
+            viewMode === 'grid'
+              ? 'bg-brand-500/20 text-brand-300 hover:bg-brand-500/30'
+              : 'bg-white/5 hover:bg-white/10 text-gray-300'
+          }`}
+          title={viewMode === 'grid' ? 'Switch to mask mode' : 'Switch to grid mode (both media)'}
+        >
+          {viewMode === 'grid' ? (
+            // Mask: a circle cut out of a square
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth={2} />
+              <circle cx="12" cy="12" r="4.5" strokeWidth={2} />
+            </svg>
+          ) : (
+            // Grid: a frame split in two
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth={2} />
+              <path strokeLinecap="round" strokeWidth={2} d="M12 3v18" />
+            </svg>
+          )}
+          <span className="hidden sm:inline">{viewMode === 'grid' ? '遮罩' : '网格'}</span>
+        </button>
 
         {/* Web-fullscreen exit — the only extra control this mode keeps */}
         {webFullscreen && (

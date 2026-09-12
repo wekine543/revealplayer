@@ -61,6 +61,7 @@ export default function App() {
   const isWebFullscreen = useStore((s) => s.isWebFullscreen)
   const setWebFullscreen = useStore((s) => s.setWebFullscreen)
   const quality = useStore((s) => s.quality)
+  const viewMode = useStore((s) => s.viewMode)
 
   useEffect(() => {
     if (!isWebFullscreen) return
@@ -173,13 +174,21 @@ export default function App() {
         {/* Secondary: Collapsible sidebar — full width below content on mobile */}
         {!sidebarCollapsed && !isWebFullscreen && (
           <div className="w-full lg:w-64 flex flex-col gap-3 flex-shrink-0">
-            {/* Mask Controls — collapsible */}
+            {/* Mask Controls — collapsible. In grid mode there is no mask to
+                tune, so rather than leave sliders that visibly do nothing the
+                panel says where the mode switch is. */}
             <CollapsibleSection
               title="Mask Settings"
               open={!maskCollapsed}
               onToggle={() => setMaskCollapsed(!maskCollapsed)}
             >
-              <MaskControls />
+              {viewMode === 'grid' ? (
+                <p className="text-[11px] text-gray-500 leading-relaxed">
+                  遮罩参数只在遮罩模式下生效 —— 用画面下方播放条里的「遮罩」按钮切回去。
+                </p>
+              ) : (
+                <MaskControls />
+              )}
             </CollapsibleSection>
 
             {/* Favorites — collapsible */}

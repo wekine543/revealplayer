@@ -1,6 +1,13 @@
 export type MediaType = 'video' | 'image'
 export type MediaSource = 'url' | 'local'
 
+/**
+ * How the two media are shown.
+ * - `mask`: B is revealed through A inside a circular mask (the original mode).
+ * - `grid`: both are shown whole, in two cells.
+ */
+export type ViewMode = 'mask' | 'grid'
+
 export interface MediaItem {
   type: MediaType
   source: MediaSource

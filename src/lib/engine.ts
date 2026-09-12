@@ -7,6 +7,7 @@ import { SyncManager } from './SyncManager'
 import { vertexShader, fragmentShader } from './shaders'
 import { isMobileDevice } from './device'
 import { qualityById, defaultQualityId, type QualityId, type QualityLevel } from './quality'
+import { gridLayout } from './grid'
 import type { MediaItem } from '../types'
 
 // ---- Render quality ceilings -------------------------------------------------
@@ -126,6 +127,13 @@ class Engine {
 
   // Sync
   sync = new SyncManager()
+
+  /**
+   * Grid mode: the two media are shown whole, side by side, instead of B being
+   * revealed through A. Owned here rather than in the store because it changes
+   * what the renderer uploads every frame, not just what the UI shows.
+   */
+  gridMode = false
 
   // Render loop
   private rafId: number | null = null
@@ -256,6 +264,11 @@ class Engine {
         hasTexB: { value: false },
         mediaAspectA: { value: 1 },
         mediaAspectB: { value: 1 },
+        gridMode: { value: false },
+        gridHorizontal: { value: true },
+        gridAspect: { value: 16 / 9 },
+        gridSplit: { value: 0.5 },
+        gridHasBoth: { value: false },
       },
     })
     this.plane = new THREE.Mesh(geometry, this.material)
@@ -451,6 +464,10 @@ class Engine {
       const a = vw / vh
       if (slot === 'A') this.material.uniforms.mediaAspectA.value = a
       else this.material.uniforms.mediaAspectB.value = a
+      // The real dimensions may differ from the ones probed at load time, so
+      // the grid has to be recomputed — otherwise the container is sized from
+      // stale numbers and the picture is letterboxed inside it.
+      this.updateGridUniforms()
     }
 
     // Called both when metadata arrives and whenever the user changes quality,
@@ -566,6 +583,44 @@ class Engine {
     if (!this.material) return
     this.material.uniforms.hasTexA.value = this.texA !== null
     this.material.uniforms.hasTexB.value = this.texB !== null
+    this.updateGridUniforms()
+    this.dirty = true
+  }
+
+  // ---- Grid ("both at once") mode ----
+
+  /**
+   * Switch between the reveal mask and the two-cell grid.
+   *
+   * Media B only reaches the screen inside the mask, so while the mask is closed
+   * the engine deliberately stops uploading its frames (see uploadVideoFrame).
+   * In grid mode B is always visible, so that shortcut has to be lifted and the
+   * next frame forced, otherwise B would show a stale frame until something else
+   * happened to redraw it.
+   */
+  setGridMode(enabled: boolean) {
+    if (this.gridMode === enabled) return
+    this.gridMode = enabled
+    this.uploadedTimeB = -1
+    this.updateGridUniforms()
+    this.dirty = true
+  }
+
+  /**
+   * Recompute where the two cells are. Cheap, and it is the one place the
+   * layout is derived, so the picture and the container can never disagree.
+   */
+  private updateGridUniforms() {
+    if (!this.material) return
+    const u = this.material.uniforms
+    const aA = u.hasTexA.value ? (u.mediaAspectA.value as number) : null
+    const aB = u.hasTexB.value ? (u.mediaAspectB.value as number) : null
+    const layout = gridLayout(aA, aB)
+    u.gridMode.value = this.gridMode
+    u.gridHorizontal.value = layout.horizontal
+    u.gridAspect.value = layout.aspect
+    u.gridSplit.value = layout.split
+    u.gridHasBoth.value = layout.hasBoth
     this.dirty = true
   }
 
@@ -796,8 +851,9 @@ class Engine {
     if (vA && !vA.paused && !vA.ended && vA.currentTime !== this.uploadedTimeA) return true
 
     // Media B is only on screen while the mask is open, so while it is closed
-    // there is nothing to redraw for it — see uploadVideoFrame().
-    if (this.mouseActive) {
+    // there is nothing to redraw for it — see uploadVideoFrame(). In grid mode
+    // B has its own cell and is visible the whole time.
+    if (this.mouseActive || this.gridMode) {
       const vB = this.elB instanceof HTMLVideoElement ? this.elB : null
       if (vB && !vB.paused && !vB.ended && vB.currentTime !== this.uploadedTimeB) return true
     }
@@ -829,7 +885,8 @@ class Engine {
     // no point pushing ~4-8 MB per frame to the GPU for something nobody can
     // see. The moment the mask opens, the stale timestamp below makes the next
     // frame upload immediately, still perfectly in sync.
-    if (slot === 'B' && !this.mouseActive) return
+    // In grid mode B has its own cell, so it is always worth uploading.
+    if (slot === 'B' && !this.mouseActive && !this.gridMode) return
 
     const el = slot === 'A' ? this.elA : this.elB
     if (!(el instanceof HTMLVideoElement)) return

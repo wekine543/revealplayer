@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { MediaItem, MaskSettings, FavoriteItem } from '../types'
+import type { MediaItem, MaskSettings, FavoriteItem, ViewMode } from '../types'
 import { loadSettings, saveSettings } from '../lib/settings'
 import type { QualityId } from '../lib/quality'
 
@@ -25,6 +25,12 @@ interface AppState {
 
   /** Render quality tier (原画 / 1080P / 720P / 480P) */
   quality: QualityId
+  /**
+   * `mask` reveals B through A; `grid` shows both whole. Persisted — it is a
+   * viewing preference, and someone comparing two clips will want to stay in
+   * grid mode across sessions.
+   */
+  viewMode: ViewMode
   /**
    * Bilibili-style web fullscreen: a CSS layout mode that hides everything but
    * the canvas, transport and an exit button. Deliberately NOT persisted — it is
@@ -61,6 +67,7 @@ interface AppState {
   setPlaybackRate: (v: number) => void
   setLooping: (v: boolean) => void
   setQuality: (v: QualityId) => void
+  setViewMode: (v: ViewMode) => void
   setWebFullscreen: (v: boolean) => void
   setMaskSettings: (partial: Partial<MaskSettings>) => void
   setMouseActive: (v: boolean) => void
@@ -85,6 +92,7 @@ export const useStore = create<AppState>((set) => ({
   playbackRate: persisted.playbackRate,
   isLooping: persisted.isLooping,
   quality: persisted.quality,
+  viewMode: persisted.viewMode,
   isWebFullscreen: false,
 
   maskSettings: { ...persisted.maskSettings },
@@ -145,6 +153,11 @@ export const useStore = create<AppState>((set) => ({
   setQuality: (v) => {
     set({ quality: v })
     saveSettings({ quality: v })
+  },
+
+  setViewMode: (v) => {
+    set({ viewMode: v })
+    saveSettings({ viewMode: v })
   },
 
   setWebFullscreen: (v) => set({ isWebFullscreen: v }),

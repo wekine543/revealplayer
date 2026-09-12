@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { engine } from '../lib/engine'
 import { useStore } from '../store/useStore'
+import { FALLBACK_ASPECT, gridLayout } from '../lib/grid'
 
 /**
  * `fill` releases the aspect-ratio cap so the canvas covers its container
@@ -21,6 +22,7 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
   const setCurrentTime = useStore((s) => s.setCurrentTime)
   const setDuration = useStore((s) => s.setDuration)
   const setIsPlaying = useStore((s) => s.setIsPlaying)
+  const viewMode = useStore((s) => s.viewMode)
 
   // Init engine
   useEffect(() => {
@@ -77,6 +79,12 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
     setIsPlaying(false)
   }, [mediaB, setIsPlaying])
 
+  // Grid mode changes what the renderer draws and what it uploads, so it lives
+  // on the engine rather than in React state alone.
+  useEffect(() => {
+    engine.setGridMode(viewMode === 'grid')
+  }, [viewMode])
+
   // Update duration when media changes
   useEffect(() => {
     if (mediaA?.duration) setDuration(mediaA.duration)
@@ -98,24 +106,30 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
   useEffect(() => { engine.setVolume('A', volumeA, mutedA) }, [volumeA, mutedA])
   useEffect(() => { engine.setVolume('B', volumeB, mutedB) }, [volumeB, mutedB])
 
+  // There is no mask to steer in grid mode, so tracking the pointer would only
+  // force redraws for nothing.
+  const isGrid = viewMode === 'grid'
+
   // Mouse events
   const handleMouseMove = (e: React.MouseEvent) => {
+    if (isGrid) return
     engine.setMouseFromEvent(e.clientX, e.clientY)
   }
 
   const handleMouseLeave = () => {
+    if (isGrid) return
     engine.setMouseInactive()
   }
 
   // Touch support — a single finger acts as the "mouse" so the mask follows it
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length !== 1) return
+    if (isGrid || e.touches.length !== 1) return
     const touch = e.touches[0]
     engine.setMouseFromEvent(touch.clientX, touch.clientY)
   }
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    if (e.touches.length === 0) return
+    if (isGrid || e.touches.length === 0) return
     // Only track a single finger; ignore pinch gestures
     if (e.touches.length > 1) {
       engine.setMouseInactive()
@@ -126,11 +140,13 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
   }
 
   const handleTouchEnd = () => {
+    if (isGrid) return
     engine.setMouseInactive()
   }
 
   // Wheel to adjust radius (desktop)
   const handleWheel = (e: React.WheelEvent) => {
+    if (isGrid) return
     e.preventDefault()
     const delta = e.deltaY > 0 ? -0.01 : 0.01
     const current = useStore.getState().maskSettings
@@ -153,11 +169,15 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
     return () => clearInterval(interval)
   }, [setIsPlaying])
 
-  // The playback area adopts media A's own aspect ratio, so a portrait clip
-  // gets a portrait frame instead of sitting inside a wide letterbox.
-  // Falls back to 16:9 before anything is loaded.
-  const mediaAspect =
-    mediaA && mediaA.width > 0 && mediaA.height > 0 ? mediaA.width / mediaA.height : 16 / 9
+  // The playback area adopts the picture's own aspect ratio, so a portrait clip
+  // gets a portrait frame instead of sitting inside a wide letterbox: media A's
+  // in mask mode, and the two cells joined together in grid mode. Falls back to
+  // 16:9 before anything is loaded.
+  const aspectOf = (m: typeof mediaA) =>
+    m && m.width > 0 && m.height > 0 ? m.width / m.height : null
+  const mediaAspect = isGrid
+    ? gridLayout(aspectOf(mediaA), aspectOf(mediaB)).aspect
+    : aspectOf(mediaA) ?? FALLBACK_ASPECT
 
   return (
     <div
@@ -168,7 +188,9 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
     >
       <canvas
         ref={canvasRef}
-        className="absolute inset-0 w-full h-full cursor-crosshair touch-none select-none"
+        className={`absolute inset-0 w-full h-full touch-none select-none ${
+          isGrid ? '' : 'cursor-crosshair'
+        }`}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
         onTouchStart={handleTouchStart}
@@ -184,8 +206,14 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
             <p className="text-xs sm:text-sm">Load media A and B to begin</p>
-            <p className="text-[10px] sm:text-xs mt-1 opacity-60 hidden sm:block">Move mouse on canvas to reveal B through A</p>
-            <p className="text-[10px] sm:text-xs mt-1 opacity-60 sm:hidden">Touch &amp; drag on canvas to reveal B through A</p>
+            {isGrid ? (
+              <p className="text-[10px] sm:text-xs mt-1 opacity-60">Both media play side by side</p>
+            ) : (
+              <>
+                <p className="text-[10px] sm:text-xs mt-1 opacity-60 hidden sm:block">Move mouse on canvas to reveal B through A</p>
+                <p className="text-[10px] sm:text-xs mt-1 opacity-60 sm:hidden">Touch &amp; drag on canvas to reveal B through A</p>
+              </>
+            )}
           </div>
         </div>
       )}
