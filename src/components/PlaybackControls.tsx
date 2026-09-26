@@ -2,6 +2,7 @@ import { engine } from '../lib/engine'
 import { useStore } from '../store/useStore'
 import { formatTime } from '../lib/media'
 import { QUALITY_LEVELS, type QualityId } from '../lib/quality'
+import { toggleNativeFullscreen } from '../lib/fullscreen'
 import { useEffect, useRef, useCallback } from 'react'
 
 /**
@@ -163,16 +164,10 @@ export function PlaybackControls({ webFullscreen = false }: { webFullscreen?: bo
   }
 
   // ---- Fullscreen ----
+  // Same target and same toggle as a double click on the canvas: the canvas
+  // container, so the shader's letterboxing still fills the screen.
   const handleFullscreen = () => {
-    const canvas = engine.canvas
-    if (!canvas) return
-    const container = canvas.parentElement
-    if (!container) return
-    if (document.fullscreenElement) {
-      document.exitFullscreen()
-    } else {
-      container.requestFullscreen()
-    }
+    toggleNativeFullscreen(engine.canvas?.parentElement ?? null)
   }
 
   // ---- Screenshot ----

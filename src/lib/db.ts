@@ -10,19 +10,32 @@ interface RevealPlayerDB extends DBSchema {
     key: string
     value: Blob
   }
+  /**
+   * Miscellaneous single values. Holds the config-folder directory handle,
+   * which is structured-cloneable and therefore storable here — but NOT in
+   * localStorage, which is why this store exists.
+   */
+  kv: {
+    key: string
+    value: unknown
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<RevealPlayerDB>> | null = null
 
 function getDB() {
   if (!dbPromise) {
-    dbPromise = openDB<RevealPlayerDB>('RevealPlayerDB', 1, {
+    dbPromise = openDB<RevealPlayerDB>('RevealPlayerDB', 2, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('favorites')) {
           db.createObjectStore('favorites', { keyPath: 'id' })
         }
         if (!db.objectStoreNames.contains('blobs')) {
           db.createObjectStore('blobs')
+        }
+        // Added in v2 for the config folder handle.
+        if (!db.objectStoreNames.contains('kv')) {
+          db.createObjectStore('kv')
         }
       },
     })
@@ -74,4 +87,26 @@ export async function getBlob(id: string): Promise<Blob | undefined> {
 export async function deleteBlob(id: string): Promise<void> {
   const db = await getDB()
   await db.delete('blobs', id)
+}
+
+// ---- Key/value ----
+
+/**
+ * The config folder's FileSystemDirectoryHandle. Persisting it is what lets the
+ * next session open the folder without a picker; the value is only meaningful
+ * to the File System Access API, hence `unknown` here.
+ */
+export async function saveConfigDirHandle(handle: unknown): Promise<void> {
+  const db = await getDB()
+  await db.put('kv', handle, 'configDirHandle')
+}
+
+export async function loadConfigDirHandle(): Promise<unknown> {
+  const db = await getDB()
+  return db.get('kv', 'configDirHandle')
+}
+
+export async function clearConfigDirHandle(): Promise<void> {
+  const db = await getDB()
+  await db.delete('kv', 'configDirHandle')
 }

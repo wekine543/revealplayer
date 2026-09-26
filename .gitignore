@@ -6,7 +6,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
+.workbuddy
 node_modules
 dist
 dist-ssr
@@ -34,3 +34,10 @@ desktop.ini
 
 # WorkBuddy AI
 .workbuddy-ai/
+
+# Local runtime state: which folder the dev server is storing combos in.
+# Machine-specific, and its path belongs to whoever runs it.
+.revealplayer-store.json
+
+# Throwaway CDP smoke tests and the screenshots they capture.
+.smoke/
