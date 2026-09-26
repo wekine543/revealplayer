@@ -32,6 +32,14 @@
  *      exactly what users complained about. 2.0 with a 12% cap closes the same
  *      offset in under 200ms. Both tracks are muted, so the rate change costs
  *      no pitch and 12% is only visible if you look for it.
+ *
+ * On top of that sits the INTENTIONAL offset (see setOffset): B is not always
+ * meant to be level with A. Every comparison below targets A's clock PLUS that
+ * offset, so the correction loop maintains the requested skew rather than
+ * fighting it. Starting from the head of the clips the skew cannot be created
+ * by positioning alone — for a negative offset B's target position does not
+ * exist yet — so there the trailing element is simply held back and let it in
+ * later, which produces exactly the requested skew with nothing to correct.
  */
 
 /** Inside this offset, leave B alone — below one frame at any sane rate. */
@@ -131,6 +139,17 @@ const TIME_UPDATE_MS = 100
 const DRAG_IDLE_MS = 600
 /** How long to wait for both elements to have a decodable frame before aligning. */
 const READY_TIMEOUT_MS = 1500
+/**
+ * Below this, the staggered start is not worth its extra seeks — the two are
+ * either in sync already or close enough that the running loop closes the gap
+ * invisibly.
+ */
+const STAGGER_MIN_MS = 20
+/**
+ * A start position this close to 0 counts as "from the beginning", which is the
+ * only case the staggered start applies to — see SyncManager.play().
+ */
+const HEAD_EPS = 0.05
 
 export class SyncManager {
   private rafId: number | null = null
@@ -188,6 +207,21 @@ export class SyncManager {
 
   private lastTimeUpdateAt = 0
 
+  /**
+   * Intentional A→B skew, in seconds: B is supposed to read
+   * `A.currentTime + offsetSec`. Positive means B is ahead ("faster").
+   *
+   * Deliberately NOT reset by start(): it describes the pair the user loaded,
+   * so swapping which two elements are playing should not silently undo it.
+   */
+  private offsetSec = 0
+  /**
+   * Bumped by anything that makes an in-flight async wait stale (pause, seek,
+   * restart). A staggered start whose token has moved has been overridden and
+   * must not start the second element.
+   */
+  private playToken = 0
+
   start(
     videoA: HTMLVideoElement,
     videoB: HTMLVideoElement,
@@ -217,6 +251,9 @@ export class SyncManager {
     this.requestedSeekAtA = 0
     this.requestedSeekAtB = 0
     this.lastTimeUpdateAt = 0
+    // The skew survives a media change; anything waiting on the previous pair
+    // does not.
+    this.playToken++
 
     if (this.rafId !== null) cancelAnimationFrame(this.rafId)
     this.loop()
@@ -306,6 +343,25 @@ export class SyncManager {
   }
 
   /**
+   * Where B belongs right now, given A's clock and the intentional skew.
+   *
+   * `extraSec` carries the seek lead — see seekTargetFor. Everything that
+   * compares B against A routes through here, so there is exactly one place the
+   * offset is applied and no comparison can accidentally target "level with A".
+   */
+  private bTarget(a: HTMLVideoElement, extraSec = 0): number {
+    return this.clampToB(a.currentTime + this.offsetSec + extraSec)
+  }
+
+  /** Keep a requested B position inside what B can actually be seeked to. */
+  private clampToB(t: number): number {
+    const b = this.videoB
+    let target = Math.max(0, t)
+    if (b && isFinite(b.duration) && b.duration > 0) target = Math.min(target, b.duration - 0.05)
+    return Math.max(0, target)
+  }
+
+  /**
    * Has a requested seek visibly landed?
    *
    * `seeking === false` alone is not a safe signal: there is a window where the
@@ -344,7 +400,9 @@ export class SyncManager {
     // it was, and its "error" is not a lead error.
     if (!landed || this.seekIssuedAt <= 0) return
     if (now - this.seekIssuedAt > LANDING_TIMEOUT_MS) return
-    const err = a.currentTime - b.currentTime // > 0 → B landed behind
+    // Offset-aware: what counts is how far off B is from where it was ASKED to
+    // be, and level with A is no longer where that is.
+    const err = this.bTarget(a) - b.currentTime // > 0 → B landed behind
     this.leadCold = false
     this.seekFailStreak = Math.abs(err) > SEEK_AT ? this.seekFailStreak + 1 : 0
     this.leadMs = Math.max(0, Math.min(MAX_LEAD_MS, this.leadMs + err * 1000 * LEAD_GAIN))
@@ -384,7 +442,7 @@ export class SyncManager {
     if (this.isStalled(a, this.advancedAtA, now) || this.isStalled(b, this.advancedAtB, now)) return
     if (a.readyState < 2 || b.readyState < 2) return
 
-    const diff = a.currentTime - b.currentTime // > 0 → B is behind
+    const diff = this.bTarget(a) - b.currentTime // > 0 → B is behind its target
     const absDiff = Math.abs(diff)
     const baseRate = a.playbackRate
 
@@ -445,12 +503,14 @@ export class SyncManager {
    * lands exactly that far behind — the offset that triggered the seek is still
    * there when the seek completes. Leading by the learned amount lands B where
    * A will actually be by then.
+   *
+   * The landing point is B's target, not A's position: with a skew the pair must
+   * end up apart by `offsetSec`, or the correction has succeeded by destroying
+   * exactly what the user asked for.
    */
   private seekTargetFor(a: HTMLVideoElement) {
     const lead = (this.leadMs / 1000) * a.playbackRate
-    let target = a.currentTime + lead
-    if (isFinite(a.duration) && a.duration > 0) target = Math.min(target, a.duration - 0.05)
-    return Math.max(0, target)
+    return this.bTarget(a, lead)
   }
 
   /** Assign B's rate only when it actually changes — no per-frame writes. */
@@ -489,6 +549,8 @@ export class SyncManager {
     const b = this.videoB
     if (!a || !b) return
     const now = performance.now()
+    // Any pending staggered start belongs to an older position.
+    this.playToken++
     this.userSeekPending = true
     this.dragActiveAt = now
     this.requestedSeekAtA = now
@@ -500,16 +562,34 @@ export class SyncManager {
     this.seekFailStreak = 0
     this.userSeekMeasureAt = now
     a.currentTime = time
-    b.currentTime = time
+    // B goes to A's position PLUS the skew. Reading `a.currentTime` back here
+    // would return the pre-seek value, hence the raw requested time.
+    b.currentTime = this.clampToB(time + this.offsetSec)
   }
 
-  // Unified play. Start both in the same task — awaiting them one after the
-  // other guarantees a startup offset, because B only begins once A's play()
-  // promise settles. Then align exactly once, after both have a decodable frame.
+  /**
+   * Start both elements on the skew they are meant to have.
+   *
+   * The normal path (below) starts both in the same task and then aligns.
+   * Starting from the HEAD of the clips is the one case that cannot work that
+   * way: "B is 0.05s ahead" would mean either skipping the first 0.05s of B, or
+   * — for a negative skew — putting B at a position that does not exist yet.
+   *
+   * So both hold the same frame, the leading element starts, and the trailing
+   * one joins in once real-world time equals the skew. Nothing is skipped on
+   * either side and the pair is already exactly right when the loop sees them,
+   * so unlike a correction there is no lanes-shift while it settles.
+   */
   async play() {
     const a = this.videoA
     const b = this.videoB
     if (!a || !b) return
+
+    const delayMs = Math.abs(this.offsetSec) * 1000
+    if (delayMs >= STAGGER_MIN_MS && a.currentTime <= HEAD_EPS) {
+      await this.staggeredStart(delayMs)
+      return
+    }
 
     await Promise.all([
       a.play().catch(() => undefined), // autoplay block
@@ -520,10 +600,58 @@ export class SyncManager {
     this.alignNow()
   }
 
+  private async staggeredStart(delayMs: number) {
+    const a = this.videoA
+    const b = this.videoB
+    if (!a || !b) return
+
+    // > 0 → B leads and A waits; < 0 → A leads and B waits.
+    const leader = this.offsetSec > 0 ? b : a
+    const follower = this.offsetSec > 0 ? a : b
+
+    const start = a.currentTime
+    follower.pause()
+    // Both begin from the same frame: the skew comes from WHEN they start, not
+    // from where.
+    if (follower.currentTime !== start) follower.currentTime = start
+    if (leader.currentTime !== start) leader.currentTime = start
+
+    const token = ++this.playToken
+    await this.waitReady(2, Math.min(READY_TIMEOUT_MS, delayMs + 200))
+    if (token !== this.playToken) return
+
+    try {
+      await leader.play()
+    } catch {
+      /* autoplay block */
+    }
+    if (token !== this.playToken) return
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    // A pause(), seek() or media swap during the wait means the caller changed
+    // its mind — starting the follower now would fight whatever it asked for.
+    if (token !== this.playToken) return
+
+    try {
+      await follower.play()
+    } catch {
+      /* autoplay block */
+    }
+    await this.waitReady()
+    // A fresh episode: whatever the learner knew about the old pair does not
+    // apply, and the alignment below is exactly what the budget is for.
+    this.lastHardSeekAt = -Infinity
+    this.seekStamps = []
+    this.seekFailStreak = 0
+    this.userSeekPending = false
+    if (token === this.playToken) this.alignNow()
+  }
+
   pause() {
     const a = this.videoA
     const b = this.videoB
     if (!a || !b) return
+    // Cancel any stagger still waiting to release its follower.
+    this.playToken++
     a.pause()
     b.pause()
     // The throttled loop may not have reported the final position yet.
@@ -537,6 +665,33 @@ export class SyncManager {
     if (!a || !b) return
     a.playbackRate = rate
     b.playbackRate = rate
+  }
+
+  /**
+   * Set (or move) the intentional A→B skew, in seconds. Positive = B ahead.
+   *
+   * Applied immediately so the effect is visible instead of waiting for the
+   * loop to drift onto it: parked, B is seeked to its new position; playing,
+   * a skew this large is a hard seek in all but name, and doing it here rather
+   * than leaving it to `correct()` saves the ~1s of rate nudge a nudge-only fix
+   * would need for anything under SEEK_AT.
+   */
+  setOffset(sec: number) {
+    const next = Number.isFinite(sec) ? sec : 0
+    if (Math.abs(next - this.offsetSec) < 1e-6) return
+    this.offsetSec = next
+
+    const a = this.videoA
+    const b = this.videoB
+    if (!a || !b) return
+
+    if (a.paused || b.paused) {
+      // Parked: put B where it belongs so the next play starts from the skew.
+      this.requestedSeekAtB = performance.now()
+      b.currentTime = this.bTarget(a)
+      return
+    }
+    this.alignNow()
   }
 
   // ---- Alignment helpers ----
@@ -594,7 +749,8 @@ export class SyncManager {
     const a = this.videoA
     const b = this.videoB
     if (!a || !b) return
-    const target = a.currentTime
+    // Level with A is no longer the answer when a skew is requested.
+    const target = this.bTarget(a)
     this.learnPending = false
     this.lastSeekTarget = target
     this.requestedSeekAtB = performance.now()
@@ -639,7 +795,7 @@ export class SyncManager {
     if (!a || !b) return
     const now = performance.now()
 
-    if (Math.abs(a.currentTime - b.currentTime) > SEEK_AT && !a.seeking && !b.seeking) {
+    if (Math.abs(this.bTarget(a) - b.currentTime) > SEEK_AT && !a.seeking && !b.seeking) {
       this.hardSeek(a, b, now)
     }
     this.applyRateB(a.playbackRate)

@@ -1,19 +1,21 @@
 import { useState, useRef, useEffect } from 'react'
 import { useStore } from '../store/useStore'
-import { saveFavorite, getFavorites } from '../lib/db'
-import type { FavoriteItem, MediaRef } from '../types'
+import { addFavorite, favoritesSource } from '../lib/favorites'
 
 export function FavoriteButton() {
   const [showInput, setShowInput] = useState(false)
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
 
   const mediaA = useStore((s) => s.mediaA)
   const mediaB = useStore((s) => s.mediaB)
   const maskSettings = useStore((s) => s.maskSettings)
+  const bOffset = useStore((s) => s.bOffset)
   const setFavorites = useStore((s) => s.setFavorites)
+  const setActiveFavorite = useStore((s) => s.setActiveFavorite)
 
   const canSave = mediaA !== null || mediaB !== null
 
@@ -45,30 +47,26 @@ export function FavoriteButton() {
   const handleSave = async () => {
     if (!canSave) return
     setSaving(true)
+    setError('')
     try {
-      const toRef = (m: typeof mediaA): MediaRef | null => {
-        if (!m) return null
-        return {
-          type: m.type,
-          source: m.source,
-          url: m.source === 'url' ? m.url : undefined,
-          blobId: m.blobId,
-          fileName: m.fileName,
-        }
-      }
+      const fallback = mediaA?.fileName
+        ? mediaA.fileName.replace(/\.[^.]+$/, '')
+        : `Combo ${new Date().toLocaleString()}`
 
-      const item: FavoriteItem = {
-        id: `fav_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-        name: name.trim() || `Combo ${new Date().toLocaleString()}`,
-        createdAt: Date.now(),
-        mediaA: toRef(mediaA),
-        mediaB: toRef(mediaB),
-        maskSettings: { ...maskSettings },
-      }
+      // With a config folder connected this also copies both media files into
+      // it; otherwise the combo goes to IndexedDB.
+      const { list, id } = await addFavorite({
+        name: name.trim() || fallback,
+        mediaA,
+        mediaB,
+        maskSettings,
+        bOffset,
+      })
 
-      await saveFavorite(item)
-      const favs = await getFavorites()
-      setFavorites(favs)
+      setFavorites(list)
+      // The pair on screen is now this combo, so any further tuning — the A→B
+      // skew especially — has somewhere to go.
+      setActiveFavorite(id)
       setShowInput(false)
       setName('')
       // Brief confirmation flash
@@ -76,6 +74,7 @@ export function FavoriteButton() {
       setTimeout(() => setSaved(false), 1500)
     } catch (e) {
       console.error('Failed to save favorite:', e)
+      setError(e instanceof Error ? e.message : '保存失败')
     } finally {
       setSaving(false)
     }
@@ -123,6 +122,14 @@ export function FavoriteButton() {
             className="w-full text-sm px-2.5 py-2 sm:py-1.5 rounded-md bg-black/40 border border-white/10 text-gray-200 placeholder-gray-500 focus:outline-none focus:border-brand-400"
             autoFocus
           />
+          <p className="mt-2 text-[10px] text-gray-500 leading-relaxed">
+            {favoritesSource() === 'config'
+              ? '两个媒体文件会被复制到配置文件夹，组合可随文件夹迁移'
+              : '将保存到浏览器本地（IndexedDB），清缓存会丢失'}
+          </p>
+
+          {error && <p className="mt-1.5 text-[10px] text-red-400">{error}</p>}
+
           <div className="flex gap-2 mt-2.5">
             <button
               onClick={handleSave}

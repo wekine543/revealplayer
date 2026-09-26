@@ -1,16 +1,44 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { engine } from '../lib/engine'
 import { useStore } from '../store/useStore'
 import { FALLBACK_ASPECT, gridLayout } from '../lib/grid'
+import { toggleNativeFullscreen } from '../lib/fullscreen'
+
+/**
+ * How close together two taps have to be to count as a double tap on touch
+ * devices (ms). Desktop uses the browser's own `dblclick` and ignores this.
+ */
+const DOUBLE_TAP_MS = 300
+
+/**
+ * How far the second tap may drift from the first (px). Fingers are not mice —
+ * without this a tap that slides even slightly would not register.
+ */
+const DOUBLE_TAP_SLOP_PX = 40
 
 /**
  * `fill` releases the aspect-ratio cap so the canvas covers its container
  * instead of sizing itself to a fraction of the viewport height. Web fullscreen
  * uses it: the picture is then letterboxed inside the canvas by the shader, the
  * same way a video player fills a screen.
+ *
+ * `grow` is the gentler version used by the desktop three-column layout: the
+ * picture keeps its own aspect ratio but is sized against the space the column
+ * actually has, so it fills the stage instead of stopping at a viewport
+ * fraction. The ratio is enforced here rather than in CSS because neither axis
+ * is a known length — the stage is whatever the flex row leaves over.
  */
-export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
+export function CanvasView({ fill = false, grow = false }: { fill?: boolean; grow?: boolean } = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  // The stage the picture is measured against when `grow` is on. It is a
+  // separate element because the picture box cannot size itself from a
+  // container whose height it is also responsible for.
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [stage, setStage] = useState<{ w: number; h: number } | null>(null)
+  // Last tap time/position, for touch double-tap detection.
+  const lastTapRef = useRef(0)
+  const lastTapPosRef = useRef({ x: 0, y: 0 })
   const mediaA = useStore((s) => s.mediaA)
   const mediaB = useStore((s) => s.mediaB)
   const maskSettings = useStore((s) => s.maskSettings)
@@ -23,6 +51,7 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
   const setDuration = useStore((s) => s.setDuration)
   const setIsPlaying = useStore((s) => s.setIsPlaying)
   const viewMode = useStore((s) => s.viewMode)
+  const bOffset = useStore((s) => s.bOffset)
 
   // Init engine
   useEffect(() => {
@@ -41,6 +70,7 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
     const state = useStore.getState()
     engine.setLoop(state.isLooping)
     engine.setRate(state.playbackRate)
+    engine.setSyncOffset(state.bOffset)
     engine.updateMaskUniforms(state.maskSettings)
 
     const handleResize = () => engine.resize()
@@ -58,6 +88,32 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
       engine.dispose()
     }
   }, [setCurrentTime])
+
+  // Measure the stage. Layout effect rather than effect: the very first paint
+  // already has to use the real size, or the picture would flash at full width
+  // for a frame before snapping to the fitted box.
+  useLayoutEffect(() => {
+    if (!grow) {
+      setStage(null)
+      return
+    }
+    const el = stageRef.current
+    if (!el) return
+    const measure = () => {
+      const r = el.getBoundingClientRect()
+      setStage((prev) =>
+        prev && Math.abs(prev.w - r.width) < 0.5 && Math.abs(prev.h - r.height) < 0.5
+          ? prev
+          : { w: r.width, h: r.height },
+      )
+    }
+    measure()
+    // The stage resizes with the window, with the side columns and with the
+    // combos divider, none of which is a window resize event.
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [grow])
 
   // Sync media A changes to engine
   useEffect(() => {
@@ -106,6 +162,10 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
   useEffect(() => { engine.setVolume('A', volumeA, mutedA) }, [volumeA, mutedA])
   useEffect(() => { engine.setVolume('B', volumeB, mutedB) }, [volumeB, mutedB])
 
+  // The A→B skew lives on the sync manager, so changing it is instant: no
+  // reload of either slot is needed and playback does not restart.
+  useEffect(() => { engine.setSyncOffset(bOffset) }, [bOffset])
+
   // There is no mask to steer in grid mode, so tracking the pointer would only
   // force redraws for nothing.
   const isGrid = viewMode === 'grid'
@@ -123,8 +183,24 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
 
   // Touch support — a single finger acts as the "mouse" so the mask follows it
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (isGrid || e.touches.length !== 1) return
+    if (e.touches.length !== 1) return
     const touch = e.touches[0]
+
+    // Double tap = toggle native fullscreen, the touch equivalent of dblclick.
+    // Checked before the grid guard on purpose: fullscreen has nothing to do
+    // with the mask, so it should work in grid mode too.
+    const now = Date.now()
+    const dx = touch.clientX - lastTapPosRef.current.x
+    const dy = touch.clientY - lastTapPosRef.current.y
+    if (now - lastTapRef.current < DOUBLE_TAP_MS && Math.hypot(dx, dy) < DOUBLE_TAP_SLOP_PX) {
+      lastTapRef.current = 0
+      toggleNativeFullscreen(containerRef.current)
+    } else {
+      lastTapRef.current = now
+      lastTapPosRef.current = { x: touch.clientX, y: touch.clientY }
+    }
+
+    if (isGrid) return
     engine.setMouseFromEvent(touch.clientX, touch.clientY)
   }
 
@@ -154,6 +230,13 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
     useStore.getState().setMaskSettings({ radius: newRadius })
   }
 
+  // Double click toggles native fullscreen — in on the way in, off on the way
+  // out. The same gesture reads as "make this bigger" and "put it back", so one
+  // handler covers both states.
+  const handleDoubleClick = () => {
+    toggleNativeFullscreen(containerRef.current)
+  }
+
   // Detect play state changes
   useEffect(() => {
     const checkPlayState = () => {
@@ -178,13 +261,25 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
   const mediaAspect = isGrid
     ? gridLayout(aspectOf(mediaA), aspectOf(mediaB)).aspect
     : aspectOf(mediaA) ?? FALLBACK_ASPECT
+  const ar = mediaAspect > 0 ? mediaAspect : FALLBACK_ASPECT
 
-  return (
+  // Largest box with the media's own ratio that fits the stage: height-bound on
+  // a wide shallow stage, width-bound on a narrow tall one. Left undefined until
+  // the stage has been measured, which lets the CSS ratio carry the first paint.
+  let box: { width: number; height: number } | undefined
+  if (grow && stage && stage.w > 0 && stage.h > 0) {
+    const w = Math.min(stage.w, stage.h * ar)
+    box = { width: Math.floor(w), height: Math.floor(w / ar) }
+  }
+
+  const frame = (
     <div
+      ref={containerRef}
       className={`canvas-fit relative bg-black overflow-hidden shadow-2xl ${
-        fill ? 'canvas-fill' : 'rounded-lg sm:rounded-xl'
+        fill ? 'canvas-fill' : grow ? 'canvas-grow rounded-lg sm:rounded-xl' : 'rounded-lg sm:rounded-xl'
       }`}
-      style={{ '--ar': String(mediaAspect) } as React.CSSProperties}
+      style={{ '--ar': String(ar), ...(box ?? {}) } as React.CSSProperties}
+      onDoubleClick={handleDoubleClick}
     >
       <canvas
         ref={canvasRef}
@@ -217,6 +312,18 @@ export function CanvasView({ fill = false }: { fill?: boolean } = {}) {
           </div>
         </div>
       )}
+    </div>
+  )
+
+  // The stage wrapper is ALWAYS rendered, and `grow` only switches its class.
+  // Letting the wrapper appear/disappear would make React reuse the outer div
+  // for the stage and build a fresh canvas inside — the engine would keep the
+  // old, now-detached element and every resize would land nowhere (the picture
+  // would stay black). `display: contents` keeps the non-grow layouts exactly
+  // as they were before the wrapper existed.
+  return (
+    <div ref={stageRef} className={grow ? 'rp-stage' : 'contents'}>
+      {frame}
     </div>
   )
 }

@@ -1,7 +1,9 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store/useStore'
 import { loadLocalFile, loadUrlMedia } from '../lib/media'
+import { probeFrameRate, formatFrameRate } from '../lib/frameRate'
 import { saveBlob } from '../lib/db'
+import { isActive as isConfigActive } from '../lib/configDir'
 
 interface MediaLoaderProps {
   slot: 'A' | 'B'
@@ -18,14 +20,35 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
   const media = useStore((s) => (slot === 'A' ? s.mediaA : s.mediaB))
   const setMedia = useStore((s) => (slot === 'A' ? s.setMediaA : s.setMediaB))
 
+  // Measured frame rate of the loaded video: undefined while probing, null when
+  // it could not be determined, a number once known. Images stay undefined.
+  const [fps, setFps] = useState<number | null | undefined>(undefined)
+  const url = media?.type === 'video' ? media.url : null
+  useEffect(() => {
+    if (!url) {
+      setFps(undefined)
+      return
+    }
+    let stale = false
+    setFps(undefined)
+    probeFrameRate(url).then((v) => {
+      if (!stale) setFps(v)
+    })
+    return () => {
+      stale = true
+    }
+  }, [url])
+
   const handleFile = async (file: File) => {
     setError('')
     setLoading(true)
     try {
       const mediaItem = await loadLocalFile(file)
 
-      // Save blob to IndexedDB for local files
-      if (mediaItem.source === 'local') {
+      // Save blob to IndexedDB for local files. Skipped while a config folder
+      // is connected: the copy that matters then lives in the folder, and
+      // keeping a second full copy in the browser would only waste disk.
+      if (mediaItem.source === 'local' && !isConfigActive()) {
         const res = await fetch(mediaItem.url)
         const blob = await res.blob()
         mediaItem.blobId = await saveBlob(blob)
@@ -136,6 +159,16 @@ export function MediaLoader({ slot }: MediaLoaderProps) {
             <span className="absolute top-1 right-1 text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 rounded bg-black/60 text-white">
               {media.width}×{media.height}
             </span>
+            {/* Frame rate, measured once the clip has been sampled. Absent for
+                images and when the browser gives no way to measure it. */}
+            {fps !== undefined && fps !== null && (
+              <span
+                className="absolute bottom-1 right-1 text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 rounded bg-black/60 text-white"
+                title={`${formatFrameRate(fps)} frames per second`}
+              >
+                {formatFrameRate(fps)} fps
+              </span>
+            )}
           </div>
           <p className="text-[10px] sm:text-xs text-gray-400 truncate" title={media.fileName ?? media.url}>
             {media.fileName ?? media.url}

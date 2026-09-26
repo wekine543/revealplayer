@@ -8,6 +8,7 @@ import { vertexShader, fragmentShader } from './shaders'
 import { isMobileDevice } from './device'
 import { qualityById, defaultQualityId, type QualityId, type QualityLevel } from './quality'
 import { gridLayout } from './grid'
+import { parkMedia } from './media'
 import type { MediaItem } from '../types'
 
 // ---- Render quality ceilings -------------------------------------------------
@@ -120,8 +121,11 @@ class Engine {
   texB: THREE.Texture | null = null
 
   // Media elements
-  elA: HTMLVideoElement | HTMLImageElement | null = null
-  elB: HTMLVideoElement | HTMLImageElement | null = null
+   elA: HTMLVideoElement | HTMLImageElement | null = null
+   elB: HTMLVideoElement | HTMLImageElement | null = null
+   /** Undo the off-screen parking of the slot's video element, if any. */
+   private unparkA: (() => void) | null = null
+   private unparkB: (() => void) | null = null
   mediaA: MediaItem | null = null
   mediaB: MediaItem | null = null
 
@@ -349,6 +353,16 @@ class Engine {
       video.preload = 'auto'
       // Native looping stays off — see handleVideoEnded.
       video.loop = false
+      // Mobile Safari will not decode a <video> that is not in the document, so a
+      // detached element (fine on desktop) leaves a phone with a black canvas and
+      // no error. Parked off-screen, and taken back out in disposeTexture.
+      if (slot === 'A') {
+        this.unparkA?.()
+        this.unparkA = parkMedia(video)
+      } else {
+        this.unparkB?.()
+        this.unparkB = parkMedia(video)
+      }
       video.src = media.url
 
       // Looping is handled here rather than by the browser's own `loop`:
@@ -541,6 +555,8 @@ class Engine {
 
   private disposeTexture(slot: 'A' | 'B') {
     if (slot === 'A') {
+      this.unparkA?.()
+      this.unparkA = null
       if (this.elA instanceof HTMLVideoElement) {
         this.elA.pause()
         this.elA.removeAttribute('src')
@@ -560,6 +576,8 @@ class Engine {
         this.material.uniforms.mediaAspectA.value = 1
       }
     } else {
+      this.unparkB?.()
+      this.unparkB = null
       if (this.elB instanceof HTMLVideoElement) {
         this.elB.pause()
         this.elB.removeAttribute('src')
@@ -757,6 +775,17 @@ class Engine {
       if (vA) vA.playbackRate = rate
       if (vB) vB.playbackRate = rate
     }
+  }
+
+  /**
+   * The intentional A→B time offset, in seconds. Positive = B ahead of A.
+   *
+   * The value lives in SyncManager, which is where every comparison between the
+   * two clocks happens. It is kept across setMedia() on purpose — it describes
+   * the pair being compared, and reloading one slot should not quietly undo it.
+   */
+  setSyncOffset(sec: number) {
+    this.sync.setOffset(sec)
   }
 
   /**

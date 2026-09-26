@@ -125,12 +125,6 @@ export function MaskControls() {
           </div>
         </>
       )}
-
-      {/* Tip */}
-      <p className="text-xs text-gray-600 pt-1">
-        <span className="hidden sm:inline">Tip: scroll on the canvas to adjust mask radius</span>
-        <span className="sm:hidden">Tip: drag the Radius slider to resize the mask</span>
-      </p>
     </div>
   )
 }
