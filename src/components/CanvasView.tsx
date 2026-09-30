@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { engine } from '../lib/engine'
-import { useStore } from '../store/useStore'
+import { useStore, useSkipHeadWait } from '../store/useStore'
 import { FALLBACK_ASPECT, gridLayout } from '../lib/grid'
 import { toggleNativeFullscreen } from '../lib/fullscreen'
 
@@ -52,6 +52,7 @@ export function CanvasView({ fill = false, grow = false }: { fill?: boolean; gro
   const setIsPlaying = useStore((s) => s.setIsPlaying)
   const viewMode = useStore((s) => s.viewMode)
   const bOffset = useStore((s) => s.bOffset)
+  const skipHeadWait = useSkipHeadWait()
 
   // Init engine
   useEffect(() => {
@@ -71,6 +72,7 @@ export function CanvasView({ fill = false, grow = false }: { fill?: boolean; gro
     engine.setLoop(state.isLooping)
     engine.setRate(state.playbackRate)
     engine.setSyncOffset(state.bOffset)
+    engine.setSkipHeadWait(skipHeadWait)
     engine.updateMaskUniforms(state.maskSettings)
 
     const handleResize = () => engine.resize()
@@ -165,6 +167,10 @@ export function CanvasView({ fill = false, grow = false }: { fill?: boolean; gro
   // The A→B skew lives on the sync manager, so changing it is instant: no
   // reload of either slot is needed and playback does not restart.
   useEffect(() => { engine.setSyncOffset(bOffset) }, [bOffset])
+
+  // How that skew is established from the head (skip vs wait) is read at the
+  // next start, so pushing it here is enough — no reload either.
+  useEffect(() => { engine.setSkipHeadWait(skipHeadWait) }, [skipHeadWait])
 
   // There is no mask to steer in grid mode, so tracking the pointer would only
   // force redraws for nothing.

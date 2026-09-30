@@ -13,6 +13,15 @@ export const OFFSET_MAX = 3
 /** Fine control down to a hundredth of a second. */
 export const OFFSET_STEP = 0.01
 
+/**
+ * Above this skew, "skip the wait" is on until the user says otherwise.
+ *
+ * Below it the wait is shorter than the eye registers anyway, and skipping real
+ * frames to save it is a bad trade — the whole point of the staggered start was
+ * that a clip's opening frames are not thrown away.
+ */
+export const SKIP_WAIT_THRESHOLD = 0.1
+
 export function clampOffset(v: number): number {
   if (!Number.isFinite(v)) return 0
   const stepped = Math.round(v / OFFSET_STEP) * OFFSET_STEP

@@ -3,7 +3,7 @@ import type { MediaItem, MaskSettings, FavoriteItem, ViewMode } from '../types'
 import { loadSettings, saveSettings, clampRailWidth } from '../lib/settings'
 import { scheduleMaskSync, type ConfigStatus } from '../lib/configDir'
 import { scheduleMaskSync as scheduleServerMaskSync } from '../lib/serverStore'
-import { clampOffset } from '../lib/timeOffset'
+import { clampOffset, SKIP_WAIT_THRESHOLD } from '../lib/timeOffset'
 import { comboOffset, updateFavorite } from '../lib/favorites'
 import type { QualityId } from '../lib/quality'
 
@@ -64,6 +64,11 @@ interface AppState {
    * the whole pair rather than to one sitting.
    */
   bOffset: number
+  /**
+   * Whether a skew is established from the head by skipping instead of waiting.
+   * null = the user has not chosen, so the answer follows the skew itself.
+   */
+  skipWait: boolean | null
 
   /** Render quality tier (原画 / 1080P / 720P / 480P) */
   quality: QualityId
@@ -131,6 +136,11 @@ interface AppState {
   setPlaybackRate: (v: number) => void
   setLooping: (v: boolean) => void
   setBOffset: (v: number) => void
+  /**
+   * Explicit choice about skipping the head wait. Passing null hands it back to
+   * the default rule, so the toggle can be un-decided again.
+   */
+  setSkipWait: (v: boolean | null) => void
   setQuality: (v: QualityId) => void
   setViewMode: (v: ViewMode) => void
   setWebFullscreen: (v: boolean) => void
@@ -163,6 +173,7 @@ export const useStore = create<AppState>((set) => ({
   playbackRate: persisted.playbackRate,
   isLooping: persisted.isLooping,
   bOffset: persisted.bOffset,
+  skipWait: persisted.skipWait,
   quality: persisted.quality,
   viewMode: persisted.viewMode,
   isWebFullscreen: false,
@@ -248,6 +259,11 @@ export const useStore = create<AppState>((set) => ({
     if (active) scheduleComboWrite(active, { bOffset: value })
   },
 
+  setSkipWait: (v) => {
+    set({ skipWait: v })
+    saveSettings({ skipWait: v })
+  },
+
   setQuality: (v) => {
     set({ quality: v })
     saveSettings({ quality: v })
@@ -330,3 +346,16 @@ export const useStore = create<AppState>((set) => ({
     if (persist) saveSettings({ combosWidth: next })
   },
 }))
+
+/**
+ * Whether a skew should be established from the head by skipping rather than
+ * waiting, with the "not chosen" state resolved against the skew itself.
+ *
+ * Kept derived rather than stored so moving the offset slider still respects the
+ * rule until the user actually touches the toggle — flipping it once should not
+ * freeze whatever the current skew implies, and this way there is no second
+ * field that can drift out of step with `bOffset`.
+ */
+export function useSkipHeadWait(): boolean {
+  return useStore((s) => s.skipWait ?? Math.abs(s.bOffset) > SKIP_WAIT_THRESHOLD)
+}

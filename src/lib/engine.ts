@@ -789,6 +789,14 @@ class Engine {
   }
 
   /**
+   * How a skew is applied when playback starts from the top: true skips the
+   * trailing element's wait, false keeps the staggered start. See SyncManager.
+   */
+  setSkipHeadWait(enabled: boolean) {
+    this.sync.setSkipHeadWait(enabled)
+  }
+
+  /**
    * Restart from the top, aligned, when either clip finishes.
    *
    * "Either", not just A: if B is the shorter clip it would otherwise sit frozen

@@ -49,6 +49,13 @@ export interface PersistedSettings {
    * overwritten whenever a combo carrying its own value is loaded.
    */
   bOffset: number
+  /**
+   * Whether starting from the head skips the trailing element's wait (see
+   * SyncManager.skippedStart). null = the user has not chosen, so whether it is
+   * on follows the size of the skew — nobody benefits from the menu state of a
+   * preference they never touched.
+   */
+  skipWait: boolean | null
   sidebarCollapsed: boolean
   maskCollapsed: boolean
   favoritesCollapsed: boolean
@@ -103,6 +110,8 @@ const defaults: PersistedSettings = {
   viewMode: 'mask',
   // No skew until the user asks for one.
   bOffset: 0,
+  // Undecided: on once the skew is large enough to notice.
+  skipWait: null,
   sidebarCollapsed: false,
   maskCollapsed: false,
   favoritesCollapsed: false,
@@ -147,6 +156,9 @@ export function loadSettings(): PersistedSettings {
       // Guard against a hand-edited or half-written value: the sync math would
       // otherwise be asked for a skew it refuses to apply.
       bOffset: typeof parsed.bOffset === 'number' && isFinite(parsed.bOffset) ? parsed.bOffset : 0,
+      // Anything other than an explicit boolean means "not chosen yet" — a
+      // half-written or hand-edited value must not silently override the user.
+      skipWait: typeof parsed.skipWait === 'boolean' ? parsed.skipWait : null,
       syncCollapsed: parsed.syncCollapsed ?? false,
       // A width from a narrower window (or a hand-edited value) must not leave
       // the rail unusable, so it goes through the same clamp as a drag.

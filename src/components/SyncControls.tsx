@@ -1,5 +1,11 @@
-import { useStore } from '../store/useStore'
-import { OFFSET_MIN, OFFSET_MAX, OFFSET_STEP, formatOffset } from '../lib/timeOffset'
+import { useStore, useSkipHeadWait } from '../store/useStore'
+import {
+  OFFSET_MIN,
+  OFFSET_MAX,
+  OFFSET_STEP,
+  SKIP_WAIT_THRESHOLD,
+  formatOffset,
+} from '../lib/timeOffset'
 
 /** Nudge buttons: a whole tenth and a single hundredth, both ways. */
 const NUDGES = [-0.1, -0.01, 0.01, 0.1]
@@ -14,10 +20,18 @@ const NUDGES = [-0.1, -0.01, 0.01, 0.1]
 export function SyncControls() {
   const bOffset = useStore((s) => s.bOffset)
   const setBOffset = useStore((s) => s.setBOffset)
+  const skipExplicit = useStore((s) => s.skipWait)
+  const setSkipWait = useStore((s) => s.setSkipWait)
   const mediaA = useStore((s) => s.mediaA)
   const mediaB = useStore((s) => s.mediaB)
+  const skipWait = useSkipHeadWait()
 
   const bothVideo = mediaA?.type === 'video' && mediaB?.type === 'video'
+  const skew = Math.abs(bOffset)
+  // From the head the two start together, so the one that is supposed to be
+  // further along begins there and the other begins at 0.
+  const leadSlot = bOffset > 0 ? 'B' : 'A'
+  const otherSlot = bOffset > 0 ? 'A' : 'B'
 
   return (
     <div className="space-y-3">
@@ -76,6 +90,31 @@ export function SyncControls() {
       >
         归零
       </button>
+
+      {/* Starting from the head: wait it out, or start already apart. Only
+          meaningful once there is a skew worth sitting through. */}
+      {skew > 0 && (
+        <label
+          className={`flex items-start gap-2 cursor-pointer select-none ${skew < SKIP_WAIT_THRESHOLD ? 'opacity-60' : ''}`}
+          title={
+            skipExplicit === null
+              ? `默认按时间差决定：超过 ${SKIP_WAIT_THRESHOLD}s 就跳过等待`
+              : '已手动设置，不再随时间差变化'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={skipWait}
+            onChange={(e) => setSkipWait(e.target.checked)}
+            className="mt-0.5 accent-brand-400 flex-shrink-0"
+          />
+          <span className="text-[11px] text-gray-600 leading-relaxed">
+            跳过开头等待：让 {leadSlot} 从第 {skew.toFixed(2)}s 开始，{otherSlot} 从第 0s 开始。
+            <br />
+            关掉则原本较慢的一路会先原地等待这段时间。
+          </span>
+        </label>
+      )}
 
       {bothVideo ? (
         <p className="text-[11px] text-gray-600 leading-relaxed">正值 = B 更快（B 的画面领先 A）。</p>

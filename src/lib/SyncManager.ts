@@ -216,6 +216,14 @@ export class SyncManager {
    */
   private offsetSec = 0
   /**
+   * When playing from the head with a skew, jump straight into the pair instead
+   * of waiting one element out — see skippedStart(). Off means the old
+   * behaviour: hold the trailing element and let it in once the skew has
+   * elapsed. Survives start() like the skew itself: it describes how the user
+   * wants this pair played.
+   */
+  private skipHeadWait = false
+  /**
    * Bumped by anything that makes an in-flight async wait stale (pause, seek,
    * restart). A staggered start whose token has moved has been overridden and
    * must not start the second element.
@@ -575,10 +583,16 @@ export class SyncManager {
    * way: "B is 0.05s ahead" would mean either skipping the first 0.05s of B, or
    * — for a negative skew — putting B at a position that does not exist yet.
    *
-   * So both hold the same frame, the leading element starts, and the trailing
-   * one joins in once real-world time equals the skew. Nothing is skipped on
-   * either side and the pair is already exactly right when the loop sees them,
-   * so unlike a correction there is no lanes-shift while it settles.
+   * So there are two ways to establish the skew from the top, and which one runs
+   * is the user's choice (see setSkipHeadWait):
+   *
+   *  - WAIT (staggeredStart): both hold the same frame, the leading element
+   *    starts, and the trailing one joins in once real-world time equals the
+   *    skew. Nothing is skipped on either side.
+   *  - SKIP (skippedStart): nothing waits. The element that is supposed to be
+   *    further into its own timeline starts already there, and the other starts
+   *    at 0 — so its opening `skew` seconds are never shown. That is exactly the
+   *    trade: no dead air at the cost of a few frames of one clip.
    */
   async play() {
     const a = this.videoA
@@ -587,7 +601,8 @@ export class SyncManager {
 
     const delayMs = Math.abs(this.offsetSec) * 1000
     if (delayMs >= STAGGER_MIN_MS && a.currentTime <= HEAD_EPS) {
-      await this.staggeredStart(delayMs)
+      if (this.skipHeadWait) await this.skippedStart(delayMs)
+      else await this.staggeredStart(delayMs)
       return
     }
 
@@ -646,6 +661,70 @@ export class SyncManager {
     if (token === this.playToken) this.alignNow()
   }
 
+  /**
+   * Start already inside the pair, with nothing waiting.
+   *
+   * The skew says one of the two belongs `d` seconds further into its own
+   * timeline than the other, and from the head the honest way to get there is to
+   * let real time produce the gap (see staggeredStart). This is the shortcut:
+   * put that element at `d` before either starts, so both begin immediately and
+   * the relationship already holds.
+   *
+   * Cost: the `d` seconds skipped are never shown. That is the deal the user is
+   * making, which is why it is opt-in — and why the default only flips on past a
+   * skew worth noticing.
+   */
+  private async skippedStart(delayMs: number) {
+    const a = this.videoA
+    const b = this.videoB
+    if (!a || !b) return
+
+    const d = delayMs / 1000
+    // > 0 → B is the one further into its own timeline, so B starts `d` in;
+    // < 0 → it is A.
+    const leader = this.offsetSec > 0 ? b : a
+    const trailer = this.offsetSec > 0 ? a : b
+
+    const token = ++this.playToken
+    const now = performance.now()
+    // Both are repositioned, so the loop must not judge either clock until the
+    // moves have visibly landed.
+    this.requestedSeekAtA = now
+    this.requestedSeekAtB = now
+    if (trailer.currentTime !== 0) trailer.currentTime = 0
+    const target = this.headStartTarget(leader, d)
+    if (leader.currentTime !== target) leader.currentTime = target
+
+    await this.waitReady(2, READY_TIMEOUT_MS)
+    if (token !== this.playToken) return
+
+    await Promise.all([
+      a.play().catch(() => undefined), // autoplay block
+      b.play().catch(() => undefined),
+    ])
+    if (token !== this.playToken) return
+    await this.waitReady()
+    // A fresh episode, same as staggeredStart: what the learner knew about the
+    // old pair does not apply here.
+    this.lastHardSeekAt = -Infinity
+    this.seekStamps = []
+    this.seekFailStreak = 0
+    this.userSeekPending = false
+    if (token === this.playToken) this.alignNow()
+  }
+
+  /**
+   * Where a skipped start may put an element: `d` in, but never past the end.
+   * A skew longer than the clip is not something we can honour, and clamping
+   * beats leaving the element parked at its last frame.
+   */
+  private headStartTarget(v: HTMLVideoElement, d: number): number {
+    if (isFinite(v.duration) && v.duration > 0) {
+      return Math.max(0, Math.min(d, v.duration - 0.05))
+    }
+    return Math.max(0, d)
+  }
+
   pause() {
     const a = this.videoA
     const b = this.videoB
@@ -665,6 +744,18 @@ export class SyncManager {
     if (!a || !b) return
     a.playbackRate = rate
     b.playbackRate = rate
+  }
+
+  /**
+   * Choose how a skew is established when playback starts from the head: true
+   * skips the trailing element's wait by starting the pair already apart (see
+   * skippedStart), false keeps the original staggered start.
+   *
+   * Nothing to do to a pair that is already running — this only describes what
+   * the next start from the top does.
+   */
+  setSkipHeadWait(v: boolean) {
+    this.skipHeadWait = v
   }
 
   /**
