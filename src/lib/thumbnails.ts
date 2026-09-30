@@ -42,6 +42,33 @@ export interface Thumb {
 const cache = new Map<string, Thumb | null>()
 const inFlight = new Map<string, Promise<Thumb | null>>()
 
+/**
+ * How many previews are decoded at once.
+ *
+ * Each one fetches the clip and decodes a frame, and doing a hundred of those
+ * in parallel is slower than doing them three at a time — the browser throttles,
+ * the network saturates, and the frames the user is actually looking at land
+ * last. Cards that scroll past pull themselves out of the queue before their
+ * turn comes, so the limit costs nothing.
+ */
+const MAX_CONCURRENT = 3
+let active = 0
+const waiting: (() => void)[] = []
+
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = () => {
+      active++
+      task().then(resolve, reject).finally(() => {
+        active--
+        waiting.shift()?.()
+      })
+    }
+    if (active < MAX_CONCURRENT) start()
+    else waiting.push(start)
+  })
+}
+
 function keyOf(ref: MediaRef | null): string | null {
   if (!ref) return null
   return ref.configPath ?? ref.blobId ?? (ref.source === 'url' ? ref.url : null) ?? null
@@ -197,7 +224,7 @@ export function getThumb(ref: MediaRef | null): Promise<Thumb | null> {
   const running = inFlight.get(key)
   if (running) return running
 
-  const task = generate(ref)
+  const task = enqueue(() => generate(ref))
     .catch(() => null)
     .then((result) => {
       cache.set(key, result)
