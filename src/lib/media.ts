@@ -1,4 +1,5 @@
 import type { MediaItem } from '../types'
+import { codecLabel, codecPlaysHere, probeVideoCodec } from './videoCodec'
 
 const VIDEO_EXT = ['mp4', 'webm', 'ogg', 'mov']
 const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'svg']
@@ -61,6 +62,26 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
 }
 
 /**
+ * Why a video would not load, in terms a person can act on.
+ *
+ * "media error 4" is technically true and practically useless, and the most
+ * common cause by far is a codec this machine cannot decode — phones record
+ * HEVC, and Chrome on Windows only plays it with the system's HEVC extension
+ * installed. Naming the codec turns "the app is broken" into "this file needs
+ * something I can install, or converting".
+ */
+async function explainVideoFailure(url: string, code: number | null): Promise<string> {
+  const codec = await probeVideoCodec(url).catch(() => 'unknown' as const)
+  if (codec !== 'unknown' && !codecPlaysHere(codec)) {
+    return `这个视频是 ${codecLabel(codec)} 编码，当前浏览器解不了 —— ` +
+      'Windows 上装一下「HEVC 视频扩展」（Microsoft Store）再重启浏览器就能看，' +
+      '或者把它转成 H.264 再导入。'
+  }
+  const detail = code ? `（media error ${code}）` : ''
+  return `浏览器打不开这个视频${detail}：文件可能已损坏、不完整，或者编码不受支持。`
+}
+
+/**
  * Create an HTMLVideoElement (hidden and parked in the document) for a URL.
  *
  * Resolves once metadata is in, which is all the loader needs; the engine
@@ -82,23 +103,41 @@ export function createVideoElement(url: string): Promise<HTMLVideoElement> {
         settled = true
         fn()
       }
+      /** The container parsed, but there is no picture to show. */
+      const failUnplayable = () => {
+        void explainVideoFailure(url, null).then((message) =>
+          done(() => {
+            unpark()
+            reject(new Error(message))
+          }),
+        )
+      }
 
       video.addEventListener('loadedmetadata', () =>
         done(() => {
+          // Metadata can arrive for a clip whose codec this browser cannot
+          // decode — every dimension is zero, and playing it would paint
+          // nothing at all. That is a failure, and a silent one otherwise.
+          if (video.videoWidth === 0 && video.videoHeight === 0) {
+            settled = false
+            failUnplayable()
+            return
+          }
           resolve(video)
           // Taken out on the next macrotask, after the caller has had its
           // microtask turn to read the dimensions off the element.
           setTimeout(unpark, 0)
         }),
       )
-      video.addEventListener('error', () =>
-        done(() => {
-          const code = video.error?.code
-          const detail = code ? ` (media error ${code})` : ''
-          unpark()
-          reject(new Error(`Failed to load video: ${url}${detail}`))
-        }),
-      )
+      video.addEventListener('error', () => {
+        const code = video.error?.code ?? null
+        void explainVideoFailure(url, code).then((message) =>
+          done(() => {
+            unpark()
+            reject(new Error(message))
+          }),
+        )
+      })
 
       video.src = url
       // Explicit after parking: some browsers otherwise wait for a play

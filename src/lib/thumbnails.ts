@@ -38,9 +38,25 @@ export interface Thumb {
   height: number
 }
 
-/** null = tried and failed. Absent = not tried yet. */
-const cache = new Map<string, Thumb | null>()
-const inFlight = new Map<string, Promise<Thumb | null>>()
+/**
+ * A preview, or the reason there is none.
+ *
+ * `unsupported` separates "this browser cannot decode the clip" from every
+ * other failure (missing file, unreachable URL, broken bytes). The card shows
+ * a warning for the first and stays quiet for the rest — a library of phone
+ * recordings is mostly HEVC, and those clips deserve an explanation rather
+ * than a blank tile.
+ */
+export interface ThumbResult {
+  thumb: Thumb | null
+  unsupported: boolean
+}
+
+const NONE: ThumbResult = { thumb: null, unsupported: false }
+
+/** Keyed by where the bytes live; holds failures too, so nothing is retried. */
+const cache = new Map<string, ThumbResult>()
+const inFlight = new Map<string, Promise<ThumbResult>>()
 
 /**
  * How many previews are decoded at once.
@@ -133,7 +149,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 /** Grab a frame near the start of the clip — the black first frame is useless. */
-async function loadVideoFrame(src: string): Promise<Thumb | null> {
+async function loadVideoFrame(src: string): Promise<ThumbResult> {
   const video = document.createElement('video')
   video.crossOrigin = 'anonymous'
   video.muted = true
@@ -143,14 +159,29 @@ async function loadVideoFrame(src: string): Promise<Thumb | null> {
   const unpark = parkMedia(video)
   video.src = src
 
+  let codecUnsupported = false
   try {
     await withTimeout(
       new Promise<void>((resolve, reject) => {
         video.onloadedmetadata = () => resolve()
-        video.onerror = () => reject(new Error('video load failed'))
+        video.onerror = () => {
+          // 4 = MEDIA_ERR_SRC_NOT_SUPPORTED: the bytes arrived and the browser
+          // still cannot decode them, which is a codec problem rather than a
+          // missing file (2 = MEDIA_ERR_NETWORK). Only the first is worth a
+          // warning on the card.
+          codecUnsupported = video.error?.code === 4
+          reject(new Error('video load failed'))
+        }
       }),
       8000,
     )
+
+    // The container parsed but carries no decodable picture: a codec this
+    // browser has no decoder for (HEVC without the Windows extension, most
+    // often). Worth telling the user about, unlike a file that is simply gone.
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      return { thumb: null, unsupported: true }
+    }
 
     const duration = Number.isFinite(video.duration) ? video.duration : 1
     const target = Math.min(duration * 0.1, 1)
@@ -165,7 +196,10 @@ async function loadVideoFrame(src: string): Promise<Thumb | null> {
         // Some codecs never fire `seeked`; draw whatever is on screen instead.
       })
     }
-    return toDataUrl(video, video.videoWidth, video.videoHeight)
+    const thumb = toDataUrl(video, video.videoWidth, video.videoHeight)
+    return { thumb, unsupported: thumb === null && video.videoWidth > 0 }
+  } catch {
+    return codecUnsupported ? { thumb: null, unsupported: true } : NONE
   } finally {
     video.removeAttribute('src')
     video.load()
@@ -198,25 +232,25 @@ async function sourceUrl(ref: MediaRef): Promise<{ url: string; owned: boolean }
   return null
 }
 
-async function generate(ref: MediaRef): Promise<Thumb | null> {
+async function generate(ref: MediaRef): Promise<ThumbResult> {
   const source = await sourceUrl(ref)
-  if (!source) return null
+  if (!source) return NONE
 
   try {
     if (ref.type === 'video') return await loadVideoFrame(source.url)
     const img = await withTimeout(loadImage(source.url), 8000)
-    return toDataUrl(img, img.naturalWidth, img.naturalHeight)
+    return { thumb: toDataUrl(img, img.naturalWidth, img.naturalHeight), unsupported: false }
   } catch {
-    return null
+    return NONE
   } finally {
     if (source.owned) URL.revokeObjectURL(source.url)
   }
 }
 
-/** Preview for the combo card, or null when it cannot be produced. */
-export function getThumb(ref: MediaRef | null): Promise<Thumb | null> {
+/** Preview for the combo card, plus whether the clip cannot be decoded here. */
+export function getThumb(ref: MediaRef | null): Promise<ThumbResult> {
   const key = keyOf(ref)
-  if (!key || !ref) return Promise.resolve(null)
+  if (!key || !ref) return Promise.resolve(NONE)
 
   const cached = cache.get(key)
   if (cached !== undefined) return Promise.resolve(cached)
@@ -225,7 +259,7 @@ export function getThumb(ref: MediaRef | null): Promise<Thumb | null> {
   if (running) return running
 
   const task = enqueue(() => generate(ref))
-    .catch(() => null)
+    .catch(() => NONE)
     .then((result) => {
       cache.set(key, result)
       inFlight.delete(key)

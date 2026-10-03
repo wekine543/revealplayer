@@ -71,7 +71,7 @@ export function ComboThumb({ media }: { media: MediaRef | null }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [seen, setSeen] = useState(false)
   const [thumb, setThumb] = useState<{ url: string; width: number; height: number } | null>(null)
-  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'empty'>(
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'unsupported' | 'empty'>(
     cacheKey ? 'idle' : 'empty',
   )
 
@@ -88,8 +88,8 @@ export function ComboThumb({ media }: { media: MediaRef | null }) {
     setState('loading')
     void getThumb(media).then((result) => {
       if (!alive) return
-      setThumb(result)
-      setState(result ? 'done' : 'empty')
+      setThumb(result.thumb)
+      setState(result.thumb ? 'done' : result.unsupported ? 'unsupported' : 'empty')
     })
     return () => {
       alive = false
@@ -105,6 +105,16 @@ export function ComboThumb({ media }: { media: MediaRef | null }) {
     >
       {state === 'done' && thumb ? (
         <img src={thumb.url} alt="" className="w-full h-full object-cover" />
+      ) : state === 'unsupported' ? (
+        // The clip is there and the container parsed — this browser just has no
+        // decoder for it. Saying so beats an empty tile and a mystery.
+        <div
+          className="w-full h-full flex flex-col items-center justify-center px-1 text-center"
+          title="浏览器解不了这个视频的编码（手机录像常见的 HEVC/H.265）。装上 Windows 的「HEVC 视频扩展」后重启浏览器就能看，或者把片段转成 H.264。"
+        >
+          <span className="text-[10px] font-bold text-amber-300/90">本机播不了</span>
+          <span className="text-[9px] text-gray-500 mt-0.5">HEVC 等新编码</span>
+        </div>
       ) : media && state !== 'idle' ? (
         <div className="w-full h-full flex items-center justify-center">
           {state === 'loading' ? (
