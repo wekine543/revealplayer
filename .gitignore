@@ -45,3 +45,6 @@ desktop.ini
 
 # Throwaway CDP smoke tests and the screenshots they capture.
 .smoke/
+
+# Release archives (built locally, uploaded to a GitHub release).
+RevealPlayer-*.zip

@@ -4,6 +4,30 @@
 
 RevealPlayer 是一个基于 WebGL 的媒体叠加播放器。你选择两个媒体源（A 和 B），A 作为默认显示层，B 作为隐藏层。播放时画面正常显示 A 的内容；当鼠标在画面上移动时，以鼠标为中心的圆形区域内显示 B 的内容，形成"探照灯"或"局部揭示"效果。
 
+## 下载
+
+不想装 node、也不想碰命令行？直接下打包好的成品，解压后双击里面的 exe 就能用：
+
+| 版本 | 直接下载 | 说明 |
+|------|----------|------|
+| **1.0.0.0** | **[RevealPlayer-v1.0.0.0-win-x64.zip](https://github.com/wekine543/revealplayer/releases/latest/download/RevealPlayer-v1.0.0.0-win-x64.zip)** （约 58 MB） | Windows 64 位。免安装、免 .NET、免 node，整个文件夹拷到别的电脑也能跑 |
+
+历史版本与更新说明在 **[Releases 页面](https://github.com/wekine543/revealplayer/releases)**。
+
+解压出来是这样：
+
+```
+RevealPlayer/
+├── RevealPlayer.Launcher.exe   启动器：自带服务，双击即用
+├── index.html                  播放器本体
+├── favicon.svg / icons.svg
+└── 使用说明.txt
+```
+
+> 第一次运行 Windows 可能提示「已保护你的电脑」（exe 没有代码签名），点「更多信息 → 仍要运行」即可。
+
+不想下载、想自己从源码跑？看下面的「如何使用」。
+
 ## 核心功能
 
 | 功能 | 说明 |
