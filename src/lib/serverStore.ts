@@ -60,9 +60,53 @@ export function isAvailable(): boolean {
   return available === true
 }
 
-/** User-facing choice, persisted per browser. */
+/**
+ * True when the page was not opened on the machine running the server — a
+ * phone, a tablet, another PC on the LAN.
+ *
+ * Read off the address the page was reached at rather than asked of the server:
+ * it is the same thing the user sees in the URL bar, needs no round-trip, and
+ * works before the probe settles. Loopback names and addresses (plus a
+ * protocol-relative host, i.e. `file://`) all mean "this machine".
+ */
+export function isRemoteClient(): boolean {
+  if (typeof window === 'undefined') return false
+  const host = window.location.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  return !(
+    host === '' ||
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host === '0.0.0.0'
+  )
+}
+
+/**
+ * User-facing choice, persisted per browser.
+ *
+ * When it has never been made, the answer depends on *where the page is open*:
+ * a device that reached the app over the LAN reads the directory the server
+ * owns — sharing it is the whole point of the LAN mode, and a phone has no
+ * other backend it could use — whereas the machine running the server assumes
+ * nothing, so a config folder someone already connected stays in charge.
+ *
+ * A server with no directory chosen yet counts as unusable: there would be
+ * nothing to share, and treating it as active would leave a remote device
+ * staring at an empty list with no way to fill it.
+ */
 export function isEnabled(): boolean {
-  return loadSettings().useServerStore
+  const choice = loadSettings().useServerStore
+  if (typeof choice === 'boolean') return choice
+  return isAvailable() && getDir() !== null && isRemoteClient()
+}
+
+/**
+ * True when the store is on because this device is remote rather than by the
+ * user's choice — the UI says so, and does not offer controls that would only
+ * repoint the server's directory from another device.
+ */
+export function isAutoEnabled(): boolean {
+  return typeof loadSettings().useServerStore !== 'boolean' && isEnabled()
 }
 
 export function isActive(): boolean {

@@ -17,6 +17,8 @@ import { FolderPathDialog } from './FolderPathDialog'
  *
  *  - **服务端存储** — files live on the machine running the dev server. Works
  *    from a phone over plain http, because it needs no browser filesystem API.
+ *    A device that reached the app over the LAN uses it by default and sees the
+ *    exact same directory the PC does; there it is shown read-only.
  *  - **配置文件夹** — a folder on this device (File System Access API, so
  *    Chromium desktop only).
  *  - **浏览器本地** — IndexedDB. Always available, lost when data is cleared.
@@ -74,6 +76,10 @@ export function ConfigDirBar({ onChanged }: { onChanged: () => void }) {
 
   const serverOn = serverStore.isActive()
   const serverUsable = serverStore.isAvailable()
+  // On a remote device the store is on because that device is remote, not
+  // because someone asked: the controls that would repoint the server's
+  // directory belong to the machine that owns it.
+  const serverShared = serverStore.isAutoEnabled()
   const kind = serverOn ? 'server' : status === 'ready' ? 'folder' : 'browser'
 
   if (status === 'loading') return null
@@ -195,6 +201,29 @@ export function ConfigDirBar({ onChanged }: { onChanged: () => void }) {
   ) : null
 
   if (kind === 'server') {
+    // A remote device is reading the directory the server owns. It is told so
+    // (and shown which one), but not offered the picker or the switcher: from
+    // another device those would only repoint the PC's store, and the
+    // alternatives they lead to — a folder it cannot open, IndexedDB it would
+    // then see as empty — are worse than what it already has.
+    if (serverShared) {
+      return (
+        <div className="mb-2">
+          <div className="flex items-center gap-1.5 rounded-md bg-green-500/10 border border-green-500/20 px-2 py-1.5">
+            <svg className="w-3.5 h-3.5 flex-shrink-0 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5z" />
+            </svg>
+            <span
+              className="flex-1 min-w-0 text-[11px] text-green-300 truncate"
+              title="这台设备通过局域网访问，收藏读写的是服务端所在电脑上的这个目录，和电脑上看到的是同一份"
+            >
+              服务端存储（共享）· {serverStore.dirName() ?? '未选择'}
+            </span>
+          </div>
+          {errorLine}
+        </div>
+      )
+    }
     return (
       <div className="mb-2">
         <div className="flex items-center gap-1.5 rounded-md bg-green-500/10 border border-green-500/20 px-2 py-1.5">

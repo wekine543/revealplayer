@@ -81,11 +81,15 @@ export interface PersistedSettings {
   configDirPath: string | null
   /**
    * Keep combos on the machine running the dev server instead of in a
-   * browser-side folder. Off by default so nobody's existing config folder is
-   * silently bypassed; the sidebar offers it whenever a server is reachable.
-   * This is the only backend that works on a phone.
+   * browser-side folder. This is the only backend a phone can use.
+   *
+   * `null` = the user has never chosen, and the app decides: a device that
+   * reached the app over the LAN reads the store the server owns — the point of
+   * the LAN mode is that every device sees the same combos — while the machine
+   * running the server keeps whatever it had, so a config folder someone
+   * already connected is not silently bypassed. An explicit choice always wins.
    */
-  useServerStore: boolean
+  useServerStore: boolean | null
 }
 
 const defaults: PersistedSettings = {
@@ -118,7 +122,8 @@ const defaults: PersistedSettings = {
   syncCollapsed: false,
   configSkipped: false,
   configDirPath: null,
-  useServerStore: false,
+  // Undecided: resolved per device by serverStore.isEnabled().
+  useServerStore: null,
   combosWidth: DEFAULT_RAIL_WIDTH,
 }
 
@@ -159,6 +164,7 @@ export function loadSettings(): PersistedSettings {
       // Anything other than an explicit boolean means "not chosen yet" — a
       // half-written or hand-edited value must not silently override the user.
       skipWait: typeof parsed.skipWait === 'boolean' ? parsed.skipWait : null,
+      useServerStore: typeof parsed.useServerStore === 'boolean' ? parsed.useServerStore : null,
       syncCollapsed: parsed.syncCollapsed ?? false,
       // A width from a narrower window (or a hand-edited value) must not leave
       // the rail unusable, so it goes through the same clamp as a drag.
