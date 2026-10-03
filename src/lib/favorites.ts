@@ -37,6 +37,28 @@ function sortByNewest(combos: FavoriteItem[]): FavoriteItem[] {
   return [...combos].sort((a, b) => b.createdAt - a.createdAt)
 }
 
+/**
+ * Mutations run one at a time.
+ *
+ * Both file-backed stores are read-modify-write, and two overlapping ones lose
+ * an update: star a combo while another combo's A→B skew is being written back
+ * and whichever read last writes a list that predates the other. It takes two
+ * quick clicks to hit — which is exactly what a star invites — so they queue
+ * here rather than relying on the user to be slow. Each task still reads the
+ * config when its turn comes, so nothing is written from a stale snapshot.
+ *
+ * Reads are deliberately not serialized: they must stay responsive while a
+ * write is in flight, and a read cannot lose anything.
+ */
+let writeQueue: Promise<unknown> = Promise.resolve()
+
+function serialize<T>(task: () => Promise<T>): Promise<T> {
+  const run = writeQueue.then(task, task)
+  // Keep the chain alive after a failure, or every later write would reject too.
+  writeQueue = run.catch(() => undefined)
+  return run
+}
+
 /** Read-modify-write against the config file, returning the new combo list. */
 async function updateConfig(mutate: (cfg: ConfigFile) => void): Promise<FavoriteItem[]> {
   const cfg = await configDir.readConfig()
@@ -87,6 +109,12 @@ export interface SaveComboArgs {
 export async function addFavorite(
   args: SaveComboArgs,
 ): Promise<{ list: FavoriteItem[]; id: string }> {
+  return await serialize(() => addFavoriteNow(args))
+}
+
+async function addFavoriteNow(
+  args: SaveComboArgs,
+): Promise<{ list: FavoriteItem[]; id: string }> {
   const { mediaA, mediaB, maskSettings } = args
   const item: FavoriteItem = {
     id: `fav_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -135,6 +163,13 @@ export async function updateFavorite(
   id: string,
   patch: Partial<FavoriteItem>,
 ): Promise<FavoriteItem[]> {
+  return await serialize(() => updateFavoriteNow(id, patch))
+}
+
+async function updateFavoriteNow(
+  id: string,
+  patch: Partial<FavoriteItem>,
+): Promise<FavoriteItem[]> {
   if (serverStore.isActive()) {
     const cfg = await serverStore.readConfig()
     const combos = cfg.combos.map((c) => (c.id === id ? { ...c, ...patch } : c))
@@ -158,7 +193,26 @@ export function comboOffset(fav: FavoriteItem): number {
   return typeof fav.bOffset === 'number' && isFinite(fav.bOffset) ? fav.bOffset : 0
 }
 
+/** The star on a combo, treating an absent field as unstarred. */
+export function isStarred(fav: FavoriteItem): boolean {
+  return fav.starred === true
+}
+
+/**
+ * Set (or clear) the star on one combo. Goes through the same patch path as the
+ * A→B skew, so it works against whichever backend is live — including the
+ * server store, which is what lets a phone star a combo and have the desktop
+ * see it.
+ */
+export async function setStarred(id: string, starred: boolean): Promise<FavoriteItem[]> {
+  return await updateFavorite(id, { starred })
+}
+
 export async function removeFavorite(id: string): Promise<FavoriteItem[]> {
+  return await serialize(() => removeFavoriteNow(id))
+}
+
+async function removeFavoriteNow(id: string): Promise<FavoriteItem[]> {
   if (serverStore.isActive()) {
     const cfg = await serverStore.readConfig()
     const combos = cfg.combos.filter((c) => c.id !== id)
@@ -175,6 +229,10 @@ export async function removeFavorite(id: string): Promise<FavoriteItem[]> {
 }
 
 export async function renameFavoriteEntry(id: string, name: string): Promise<FavoriteItem[]> {
+  return await serialize(() => renameFavoriteEntryNow(id, name))
+}
+
+async function renameFavoriteEntryNow(id: string, name: string): Promise<FavoriteItem[]> {
   if (serverStore.isActive()) {
     const cfg = await serverStore.readConfig()
     const combos = cfg.combos.map((c) => (c.id === id ? { ...c, name } : c))

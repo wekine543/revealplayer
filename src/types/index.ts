@@ -57,6 +57,12 @@ export interface FavoriteItem {
    * field reads as level.
    */
   bOffset?: number
+  /**
+   * The user's own mark, for keeping the handful of combos they actually use
+   * within reach of a one-click filter. Optional so combos saved before this
+   * existed still load — no field reads as unstarred.
+   */
+  starred?: boolean
 }
 
 /**
