@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useCallback, useEffect, useState, useMemo } from 'react'
 import { useStore } from '../store/useStore'
 import {
   listFavorites,
@@ -34,15 +34,28 @@ export function FavoriteList() {
   // Surfaced in the panel rather than only in the console: on a phone there is
   // no devtools to open, and a silent failure just looks like a dead button.
   const [loadError, setLoadError] = useState<string | null>(null)
+  /** The list itself could not be read — different from "there are none". */
+  const [listError, setListError] = useState<string | null>(null)
 
   // Load favorites on mount, and again whenever the backing store changes
   // (config folder connected, swapped or disconnected).
-  const reload = () => {
-    listFavorites().then(setFavorites).catch(console.error)
-  }
+  /**
+   * A failed list read must not be shown as "you have no combos": that reads
+   * as data loss, and the usual cause is one request that did not get through.
+   * The error and a way back are put in the panel instead.
+   */
+  const reload = useCallback(() => {
+    setListError(null)
+    listFavorites()
+      .then(setFavorites)
+      .catch((e: unknown) => {
+        console.error('[RevealPlayer] could not list combos:', e)
+        setListError(e instanceof Error ? e.message : String(e))
+      })
+  }, [setFavorites])
   useEffect(() => {
     reload()
-  }, [setFavorites])
+  }, [reload])
 
   // Filter favorites by search, and by the star when that filter is on.
   const filtered = useMemo(() => {
@@ -115,11 +128,23 @@ export function FavoriteList() {
     return (
       <div className="space-y-2">
         <ConfigDirBar onChanged={reload} />
-        <p className="text-xs text-gray-600 py-4 text-center">
-          {favoritesSource() === 'browser'
-            ? 'No saved combos yet. Load media and save a combination to see it here.'
-            : '这里还没有组合。加载媒体后点 Save Combo 保存。'}
-        </p>
+        {listError ? (
+          <div className="py-3 space-y-2 text-center">
+            <p className="text-xs text-red-400 leading-relaxed">读取收藏失败：{listError}</p>
+            <button
+              onClick={reload}
+              className="text-xs px-3 py-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-300 transition-colors"
+            >
+              重试
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-600 py-4 text-center">
+            {favoritesSource() === 'browser'
+              ? 'No saved combos yet. Load media and save a combination to see it here.'
+              : '这里还没有组合。加载媒体后点 Save Combo 保存。'}
+          </p>
+        )}
       </div>
     )
   }

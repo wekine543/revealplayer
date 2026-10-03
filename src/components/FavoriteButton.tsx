@@ -1,6 +1,24 @@
 import { useState, useRef, useEffect } from 'react'
 import { useStore } from '../store/useStore'
 import { addFavorite, favoritesSource } from '../lib/favorites'
+import * as serverStore from '../lib/serverStore'
+
+/**
+ * Where this combo is about to land, in the user's terms. Only the browser
+ * store is local — saying "will be saved locally" while the launcher's folder is
+ * in charge would read as a warning about the wrong thing entirely.
+ */
+function storageHint(): string {
+  const source = favoritesSource()
+  if (source === 'server') {
+    const dir = serverStore.dirName()
+    return dir
+      ? `保存到这台电脑上的「${dir}」，手机打开也能看到`
+      : '保存到这台电脑上，手机打开也能看到'
+  }
+  if (source === 'config') return '两个媒体文件会被复制到配置文件夹，组合可随文件夹迁移'
+  return '将保存到浏览器本地（IndexedDB），清缓存会丢失'
+}
 
 export function FavoriteButton() {
   const [showInput, setShowInput] = useState(false)
@@ -123,9 +141,7 @@ export function FavoriteButton() {
             autoFocus
           />
           <p className="mt-2 text-[10px] text-gray-500 leading-relaxed">
-            {favoritesSource() === 'config'
-              ? '两个媒体文件会被复制到配置文件夹，组合可随文件夹迁移'
-              : '将保存到浏览器本地（IndexedDB），清缓存会丢失'}
+            {storageHint()}
           </p>
 
           {error && <p className="mt-1.5 text-[10px] text-red-400">{error}</p>}

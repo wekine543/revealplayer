@@ -201,6 +201,22 @@ export default function App() {
     }
   }, [setConfigStatus, applyConfig])
 
+  // A probe that failed at start-up is retried in the background (see
+  // serverStore.probe) — the request that a phone loses while its radio wakes
+  // up, or that a page fired a moment before the server was ready. When one of
+  // those retries lands, the combos have to arrive with it: leaving the device
+  // on the empty browser store until someone thinks to reload is exactly the
+  // "it does not show my combos" report this is here to prevent.
+  useEffect(() => {
+    return serverStore.subscribe((available) => {
+      if (!available) return
+      // A launcher-managed store never asks for a folder, so a prompt that
+      // appeared while the server was unreachable must go away again.
+      if (serverStore.isManaged()) setConfigStatus('idle', serverStore.dirName(), null)
+      void applyConfig()
+    })
+  }, [applyConfig, setConfigStatus])
+
   // Persisted UI state
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed)
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed)

@@ -34,6 +34,9 @@ const WINDOWS_SKIP = new Set([
 export function send(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  // The combo list changes while the page is open — another device may be the
+  // one editing it — so no response here may come back out of the HTTP cache.
+  res.setHeader('Cache-Control', 'no-store')
   res.end(JSON.stringify(body))
 }
 

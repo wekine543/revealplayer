@@ -34,32 +34,171 @@ let maskTimer: ReturnType<typeof setTimeout> | null = null
 
 let probing: Promise<boolean> | null = null
 
+/** A request that never settles must not leave the backend undecided. */
+const PROBE_TIMEOUT_MS = 5000
+
 /**
- * One request, cached for the session.
+ * Waits before each attempt of the first round. Only a few, and close together:
+ * when a server is there it answers in milliseconds.
+ *
+ * They exist because the very first request a page makes can lose a race — the
+ * tab is still downloading a ~900 KB single-file bundle, a phone's radio is
+ * waking up, Wi-Fi is re-associating, the server is busy with the page itself.
+ * The old code turned one such miss into a verdict for the whole session: the
+ * device silently fell back to the empty browser store and stayed there until
+ * someone reloaded by hand. On a phone that is indistinguishable from "my
+ * combos are gone", which is exactly how it was reported.
+ */
+const PROBE_ATTEMPTS_MS = [0, 400, 1500]
+
+/**
+ * ...and after those, the probe keeps trying in the background, further apart,
+ * for the case where the page was simply opened before the server was ready.
+ */
+const PROBE_RETRY_MS = [6000, 15000, 30000, 45000]
+let retryIndex = 0
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * The last value handed to subscribers. The first settle is not reported —
+ * callers of `probe()` are already awaiting it — so only a real change (in
+ * practice: a failure that later turned into a success) wakes anyone up.
+ */
+let reported: boolean | null = null
+const listeners = new Set<(available: boolean) => void>()
+
+/**
+ * Told whether the store is (now) usable. Fired when a probe that had failed
+ * later succeeds, which is what lets the combos appear without a reload.
+ */
+export function subscribe(fn: (available: boolean) => void): () => void {
+  listeners.add(fn)
+  return () => {
+    listeners.delete(fn)
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('probe timed out')), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
+function notify(): void {
+  const now = available === true
+  if (reported === null) {
+    reported = now
+    return
+  }
+  if (reported === now) return
+  reported = now
+  for (const fn of listeners) {
+    try {
+      fn(now)
+    } catch {
+      // A listener must not be able to break the probe.
+    }
+  }
+}
+
+/** One request. Never throws — a miss is a boolean, not an exception. */
+async function askOnce(): Promise<boolean> {
+  try {
+    const res = await withTimeout(fetch(`${BASE}/config`, { cache: 'no-store' }), PROBE_TIMEOUT_MS)
+    if (!res.ok) return false
+    const data = (await res.json()) as Partial<ServerConfig> & { managed?: boolean }
+    directory = data.dir ?? null
+    managed = data.managed === true
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether a server is behind this page, cached once it is known.
  *
  * Awaited before anything decides which backend to use: a page can start
  * rendering (and listing combos) before the first fetch has settled, and
  * reading the wrong backend once is enough to show an empty or stale list.
  */
 export function probe(): Promise<boolean> {
-  if (probing) return probing
-  probing = (async () => {
-    try {
-      const res = await fetch(`${BASE}/config`)
-      if (!res.ok) {
-        available = false
-        return available
-      }
-      const data = (await res.json()) as Partial<ServerConfig> & { managed?: boolean }
-      directory = data.dir ?? null
-      managed = data.managed === true
-      available = true
-    } catch {
-      available = false
-    }
-    return available === true
-  })()
+  if (available === true) return Promise.resolve(true)
+  if (!probing) probing = runProbe()
   return probing
+}
+
+async function runProbe(): Promise<boolean> {
+  for (const wait of PROBE_ATTEMPTS_MS) {
+    if (wait > 0) await delay(wait)
+    if (await askOnce()) return settleProbe(true)
+  }
+  return settleProbe(false)
+}
+
+function settleProbe(ok: boolean): boolean {
+  available = ok
+  // Never final: a later probe() — a button, the list loading, the tab coming
+  // back to the foreground — is allowed to try again.
+  probing = null
+  if (ok) {
+    retryIndex = 0
+    stopRetryTimer()
+  } else {
+    scheduleRetry()
+  }
+  notify()
+  return ok
+}
+
+function stopRetryTimer(): void {
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = null
+  }
+}
+
+function scheduleRetry(): void {
+  if (retryTimer || retryIndex >= PROBE_RETRY_MS.length) return
+  const wait = PROBE_RETRY_MS[retryIndex++] as number
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    void probe()
+  }, wait)
+}
+
+/**
+ * Look again right now, from the start of the schedule. Used by the retry
+ * button, and when a backgrounded page comes back to the foreground — a phone
+ * that was asleep has just as likely changed networks while it was away.
+ */
+export function reprobe(): Promise<boolean> {
+  if (available === true) return Promise.resolve(true)
+  // A round already in flight is already the answer to "look again".
+  if (probing) return probing
+  retryIndex = 0
+  stopRetryTimer()
+  return probe()
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && available !== true) void reprobe()
+  })
 }
 
 export function isAvailable(): boolean {
@@ -170,7 +309,10 @@ export function setEnabled(on: boolean): void {
 }
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init)
+  // The store is the one thing here that changes under the page's feet — a
+  // phone may be looking at a list the PC just edited. Never let a response
+  // come back out of the HTTP cache.
+  const res = await fetch(url, { cache: 'no-store', ...init })
   if (!res.ok) throw new Error(`server store request failed: ${res.status}`)
   return (await res.json()) as T
 }

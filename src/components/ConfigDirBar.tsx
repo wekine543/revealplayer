@@ -40,6 +40,24 @@ export function ConfigDirBar({ onChanged }: { onChanged: () => void }) {
   const [, setProbed] = useState(false)
   const [picking, setPicking] = useState<'locate' | 'server-dir' | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState(false)
+
+  /**
+   * The page was served over http(s), so a server is behind it somewhere. If
+   * the store has not answered, that is a request that got lost — not a server
+   * that is absent — and worth one deliberate retry from the user.
+   */
+  const servedOverHttp =
+    typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)
+
+  const retryServer = async () => {
+    setOpenError(null)
+    setRetrying(true)
+    const ok = await serverStore.reprobe()
+    setRetrying(false)
+    if (ok) onChanged()
+    else setOpenError('还是连不上服务端。请确认这台电脑上的服务正在运行，并且本设备和它在同一个网络里。')
+  }
 
   useEffect(() => {
     let alive = true
@@ -314,6 +332,16 @@ export function ConfigDirBar({ onChanged }: { onChanged: () => void }) {
             title="存到运行服务的那台电脑上，手机也能读写"
           >
             服务端存储
+          </button>
+        )}
+        {!serverUsable && servedOverHttp && (
+          <button
+            onClick={retryServer}
+            disabled={retrying}
+            className="text-[11px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-50"
+            title="连接那台电脑上的服务，读取它保存的收藏"
+          >
+            {retrying ? '…' : '连接服务端'}
           </button>
         )}
         {folderSupported() && (
