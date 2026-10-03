@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>RevealPlayer.Launcher</AssemblyName>
+    <RootNamespace>RevealPlayer.Launcher</RootNamespace>
+    <!--
+      A plain file name beside the project, not a path out of it: the SDK only
+      patches the executable's own icon resource when the file sits here (a
+      `..\` path reaches Roslyn but not the app-host step, and the published exe
+      then keeps the generic Windows icon).
+    -->
+    <ApplicationIcon>revealplayer.ico</ApplicationIcon>
+
+    <!-- The version is shown in the window title, so it lives here only. -->
+    <Version>1.0.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0.0</InformationalVersion>
+    <Product>RevealPlayer 后端服务启动器</Product>
+    <Company>RevealPlayer</Company>
+
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <EnableDefaultApplicationDefinition>true</EnableDefaultApplicationDefinition>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Same file as ApplicationIcon, embedded so the window can point at it. -->
+    <Resource Include="revealplayer.ico" />
+  </ItemGroup>
+
+</Project>

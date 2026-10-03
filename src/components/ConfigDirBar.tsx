@@ -76,10 +76,11 @@ export function ConfigDirBar({ onChanged }: { onChanged: () => void }) {
 
   const serverOn = serverStore.isActive()
   const serverUsable = serverStore.isAvailable()
-  // On a remote device the store is on because that device is remote, not
-  // because someone asked: the controls that would repoint the server's
-  // directory belong to the machine that owns it.
-  const serverShared = serverStore.isAutoEnabled()
+  // A launcher-hosted page is told where its folder is and follows it without
+  // asking; a remote device reads the same folder over the LAN. Either way, the
+  // controls that would repoint the store belong to the machine that owns it.
+  const managed = serverStore.isManaged()
+  const serverShared = managed || serverStore.isAutoEnabled()
   const kind = serverOn ? 'server' : status === 'ready' ? 'folder' : 'browser'
 
   if (status === 'loading') return null
@@ -201,11 +202,10 @@ export function ConfigDirBar({ onChanged }: { onChanged: () => void }) {
   ) : null
 
   if (kind === 'server') {
-    // A remote device is reading the directory the server owns. It is told so
-    // (and shown which one), but not offered the picker or the switcher: from
-    // another device those would only repoint the PC's store, and the
-    // alternatives they lead to — a folder it cannot open, IndexedDB it would
-    // then see as empty — are worse than what it already has.
+    // Reading the folder the server owns. It is shown, not editable: the place
+    // to change it is the launcher window (or the PC, for a remote device) —
+    // from here the alternatives are a folder this device cannot open or an
+    // IndexedDB that would look empty.
     if (serverShared) {
       return (
         <div className="mb-2">
@@ -215,9 +215,11 @@ export function ConfigDirBar({ onChanged }: { onChanged: () => void }) {
             </svg>
             <span
               className="flex-1 min-w-0 text-[11px] text-green-300 truncate"
-              title="这台设备通过局域网访问，收藏读写的是服务端所在电脑上的这个目录，和电脑上看到的是同一份"
+              title={managed
+                ? '保存的组合和视频就在这个文件夹里。要换位置，在启动器窗口的「收藏保存位置」里改。'
+                : '这台设备通过局域网访问，收藏读写的是服务端所在电脑上的这个目录，和电脑上看到的是同一份'}
             >
-              服务端存储（共享）· {serverStore.dirName() ?? '未选择'}
+              {managed ? '收藏文件夹' : '服务端存储（共享）'} · {serverStore.dirName() ?? '未选择'}
             </span>
           </div>
           {errorLine}

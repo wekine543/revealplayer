@@ -1,0 +1,250 @@
+<Window x:Class="RevealPlayer.Launcher.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="RevealPlayer 后端服务启动器"
+        Icon="revealplayer.ico"
+        Width="940" Height="780" MinWidth="820" MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        ResizeMode="CanResize"
+        Background="{StaticResource Bg}"
+        FontFamily="{StaticResource UiFont}"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
+
+    <!--
+        Custom chrome rather than the system title bar: the window is meant to
+        read as the same product as the player, and a grey Windows caption does
+        not. CaptionHeight keeps the whole strip draggable and the resize border
+        comes from WindowChrome.
+    -->
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="46"
+                            ResizeBorderThickness="6"
+                            GlassFrameThickness="0"
+                            CornerRadius="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Border Background="{StaticResource Bg}" BorderBrush="#1FFFFFFF" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="46" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Title bar ==================================================== -->
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+                    <!-- A mask hole, as in the player: ring plus a filled centre. -->
+                    <Grid Width="18" Height="18" VerticalAlignment="Center">
+                        <Ellipse Fill="{StaticResource Brand}" />
+                        <Ellipse Width="6" Height="6" Fill="#FFFFFFFF" />
+                    </Grid>
+                    <TextBlock Text="RevealPlayer" Margin="10,0,0,0" FontSize="13.5" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextStrong}" VerticalAlignment="Center" />
+                    <TextBlock Text="后端服务" Margin="6,0,0,0" FontSize="12.5"
+                               Foreground="{StaticResource TextFaint}" VerticalAlignment="Center" />
+                    <Border Margin="10,0,0,0" Padding="7,2" CornerRadius="5"
+                            Background="#266366F1" BorderBrush="#406366F1" BorderThickness="1"
+                            VerticalAlignment="Center">
+                        <TextBlock x:Name="VersionChip" FontSize="11" FontFamily="{StaticResource MonoFont}"
+                                   Foreground="{StaticResource BrandSoft}" Text="v1.0.0.0" />
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,6,0">
+                    <Button x:Name="MinButton"
+                            Style="{StaticResource IconButton}"
+                            ToolTip="最小化（服务继续运行）"
+                            shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                            Click="Minimize_Click">
+                        <Rectangle Width="10" Height="1" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    </Button>
+                    <Button x:Name="CloseButton"
+                            Style="{StaticResource CloseButton}"
+                            ToolTip="关闭（会停止服务）"
+                            shell:WindowChrome.IsHitTestVisibleInChrome="True"
+                            Click="Close_Click">
+                        <Path Data="M 0,0 L 10,10 M 10,0 L 0,10"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.2" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- Content ====================================================== -->
+            <Grid Grid.Row="1" Margin="14,2,14,14">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- Status =================================================== -->
+                <Border Grid.Row="0" Style="{StaticResource Card}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Ellipse x:Name="StatusDot" Width="10" Height="10" VerticalAlignment="Center"
+                                         Fill="{StaticResource TextGhost}" />
+                                <TextBlock x:Name="StatusText" Text="已停止" Margin="10,0,0,0"
+                                           FontSize="15" FontWeight="SemiBold"
+                                           Foreground="{StaticResource TextStrong}" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <Button x:Name="StartButton" Content="启动服务"
+                                        Style="{StaticResource PrimaryButton}" Click="Start_Click" />
+                                <Button x:Name="StopButton" Content="停止服务" Margin="8,0,0,0"
+                                        Style="{StaticResource DangerButton}" Click="Stop_Click" />
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock x:Name="StatusDetail" Grid.Row="1" Margin="20,8,0,0"
+                                   TextWrapping="Wrap" FontSize="11.5"
+                                   Foreground="{StaticResource TextFaint}"
+                                   Text="服务没有运行。点「启动服务」，就能在浏览器里打开播放器。" />
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="20,12,0,0">
+                            <TextBlock Text="本机" Style="{StaticResource Label}" Width="48"
+                                       Foreground="{StaticResource TextGhost}" />
+                            <TextBlock x:Name="LocalUrlText" Style="{StaticResource Label}"
+                                       FontFamily="{StaticResource MonoFont}" FontSize="12"
+                                       Foreground="{StaticResource BrandSoft}" Text="http://127.0.0.1:5174/" />
+                            <Button Content="复制" Style="{StaticResource IconButton}" Margin="6,0,0,0"
+                                    FontSize="11" ToolTip="复制这个地址" Click="CopyLocal_Click" />
+                        </StackPanel>
+
+                        <StackPanel x:Name="LanRow" Grid.Row="3" Orientation="Horizontal" Margin="20,6,0,0"
+                                    Visibility="Collapsed">
+                            <TextBlock Text="手机" Style="{StaticResource Label}" Width="48"
+                                       Foreground="{StaticResource TextGhost}" />
+                            <TextBlock x:Name="LanUrlText" Style="{StaticResource Label}"
+                                       FontFamily="{StaticResource MonoFont}" FontSize="12"
+                                       Foreground="{StaticResource Ok}" Text="" />
+                            <Button Content="复制" Style="{StaticResource IconButton}" Margin="6,0,0,0"
+                                    FontSize="11" ToolTip="复制到手机浏览器打开" Click="CopyLan_Click" />
+                            <TextBlock Text="（手机连同一个 Wi-Fi）" Margin="8,0,0,0"
+                                       Style="{StaticResource Hint}" VerticalAlignment="Center" />
+                        </StackPanel>
+
+                        <Grid Grid.Row="4" Margin="20,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <Button x:Name="OpenPlayerButton" Content="打开播放器"
+                                        Style="{StaticResource GhostButton}" Click="OpenPlayer_Click" />
+                                <Button x:Name="OpenStoreButton" Content="打开收藏文件夹" Margin="8,0,0,0"
+                                        Style="{StaticResource GhostButton}" Click="OpenStore_Click" />
+                            </StackPanel>
+                            <TextBlock x:Name="MetaText" Grid.Column="1" Style="{StaticResource Hint}"
+                                       VerticalAlignment="Center" Text="—" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <!-- Settings ================================================= -->
+                <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,12,0,12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Text="设置"
+                                   Style="{StaticResource SectionTitle}" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="播放器文件夹" Style="{StaticResource Label}"
+                                   Margin="0,10,12,0" />
+                        <TextBox x:Name="AppDirBox" Grid.Row="1" Grid.Column="1" Margin="0,10,0,0"
+                                 Style="{StaticResource Field}"
+                                 ToolTip="里面要有 index.html。默认就是本程序所在的文件夹，一般不用改" />
+                        <Button x:Name="BrowseAppButton" Grid.Row="1" Grid.Column="2" Content="浏览…"
+                                Margin="8,10,0,0" Style="{StaticResource GhostButton}" Click="BrowseApp_Click" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,6,0,0"
+                                   Style="{StaticResource Hint}"
+                                   Text="默认就是本程序所在的文件夹。里面有 index.html 才能启动。" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="收藏保存位置" Style="{StaticResource Label}"
+                                   Margin="0,12,12,0" />
+                        <TextBox x:Name="StoreDirBox" Grid.Row="3" Grid.Column="1" Margin="0,12,0,0"
+                                 Style="{StaticResource Field}"
+                                 ToolTip="保存的组合和视频都放在这个文件夹里" />
+                        <Button x:Name="BrowseStoreButton" Grid.Row="3" Grid.Column="2" Content="浏览…"
+                                Margin="8,12,0,0" Style="{StaticResource GhostButton}" Click="BrowseStore_Click" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,6,0,0"
+                                   Style="{StaticResource Hint}"
+                                   Text="留空就放在播放器文件夹下的 revealplayer-store。想换到别的盘或别的文件夹，点「浏览…」。手机访问时读写的也是这里。" />
+
+                        <Grid Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                <TextBlock Text="端口" Style="{StaticResource Label}" Margin="0,0,10,0"
+                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="PortBox" Width="72" Style="{StaticResource Field}"
+                                         ToolTip="默认 5174，一般不用改。提示端口被占用时，换一个数字就行" />
+                                <CheckBox x:Name="LanCheck" Content="允许手机访问（同一个 Wi-Fi）"
+                                          Margin="18,0,0,0" VerticalAlignment="Center"
+                                          Checked="Setting_Changed" Unchecked="Setting_Changed" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                       Style="{StaticResource Hint}"
+                                       Text="关掉窗口服务就停止；想让它继续运行，把窗口最小化即可。" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <!-- Log ====================================================== -->
+                <Border Grid.Row="2" Style="{StaticResource Card}" Padding="14,12,14,14">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="0,0,0,8">
+                            <TextBlock Style="{StaticResource SectionTitle}" VerticalAlignment="Center"
+                                       Text="运行日志" />
+                            <Button x:Name="ClearLogButton" Content="清空" HorizontalAlignment="Right"
+                                    Style="{StaticResource IconButton}" FontSize="11" Click="ClearLog_Click" />
+                        </Grid>
+                        <TextBox x:Name="LogBox" Grid.Row="1" Style="{StaticResource LogView}" MinHeight="110" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

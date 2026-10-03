@@ -38,16 +38,31 @@ RevealPlayer 是一个基于 WebGL 的媒体叠加播放器。你选择两个媒
 
 > 如需重新生成此文件，在项目目录执行 `npm run build`，产物在 `dist/index.html`。
 
-### 方式二：一键启动脚本（开发模式）
+### 方式二：启动器（publish/ 里的成品，双击即用）
+
+`publish/` 是给普通用户用的成品文件夹：
+
+```
+publish/
+├── RevealPlayer.Launcher.exe   自包含，免装 .NET，也不需要 node
+├── index.html                  播放器本体
+└── favicon.svg / icons.svg
+```
+
+双击 `RevealPlayer.Launcher.exe` → 点「启动服务」→ 点「打开播放器」。勾上「允许手机访问」，同一个 Wi-Fi 下的手机用界面上给出的地址就能打开（收藏读写的是电脑上同一个文件夹）。
+
+**这块完全独立**：不需要 node，不需要源码，整个文件夹拷到别的电脑照样能跑。重新生成见「重新发布」一节。
+
+### 方式三：一键启动脚本（开发模式）
 
 双击项目目录下的 `RevealPlayer.bat`，会先启动本地服务器、等它就绪后再打开浏览器（不会出现「localhost 拒绝了连接请求」）。用完后关闭弹出的终端窗口即可。
 
 想让**手机/平板**也能访问，改用 `RevealPlayer-LAN.bat`（会监听局域网并打印 IP，详见「服务端存储」一节）。
 
-### 方式三：手动命令行（开发者）
+### 方式四：手动命令行（开发者）
 
 ```bash
-cd "C:/Users/ZhenTao/WorkBuddy AI/2026-09-11-13-17-29/revealplayer"
+cd <项目目录>
 npm run dev
 ```
 
@@ -58,6 +73,27 @@ npm run dev
 ```bash
 npm run build      # 打包为单个 HTML 文件到 dist/index.html
 npm run preview    # 本地预览打包结果
+```
+
+### 重新发布启动器（publish/）
+
+改了前端之后，按下面三步刷新 `publish/`：
+
+```bash
+npm run build
+copy dist\index.html publish\index.html
+copy dist\*.svg publish\
+dotnet publish launcher\RevealPlayer.Launcher.csproj -c Release -r win-x64 ^
+  --self-contained true -o publish ^
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true ^
+  -p:EnableCompressionInSingleFile=true
+```
+
+启动器源码在 `launcher/`（WPF / .NET 8）。改完想确认没弄坏，可以直接跑自检——它会临时起一次服务、把首页和收藏接口都请求一遍再停掉：
+
+```bash
+publish\RevealPlayer.Launcher.exe --selftest     # 结果写在同目录的 selftest.log，全部通过时退出码为 0
+publish\RevealPlayer.Launcher.exe --autostart    # 打开窗口并立刻启动服务
 ```
 
 ## 配置文件夹：让收藏可以随身带走
@@ -256,7 +292,16 @@ revealplayer/
 ├── package.json
 ├── vite.config.ts
 ├── tailwind.config.js
-└── tsconfig.json
+├── tsconfig.json
+├── RevealPlayer.bat / RevealPlayer-LAN.bat   # 开发用的启动脚本（本机 / 局域网）
+├── launcher/                  # WPF 启动器源码（.NET 8）
+│   ├── MainWindow.xaml(.cs)   # 窗口：状态、地址、设置、日志
+│   ├── LocalServer.cs         # 内置 HTTP 服务：托管 index.html + 收藏接口（含 Range / 上传）
+│   ├── ServerController.cs    # 启动/停止、找播放器文件夹、探测端口
+│   ├── LauncherSettings.cs    # 记住端口 / 文件夹 / 手机访问
+│   ├── SelfTest.cs            # --selftest：无界面跑一遍启停与接口
+│   └── Theme.xaml             # 与网页同一套配色的控件样式
+└── publish/                   # 发布成品（exe + index.html），已 gitignore
 ```
 
 ## 响应式断点

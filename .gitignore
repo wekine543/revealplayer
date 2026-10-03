@@ -11,7 +11,11 @@ node_modules
 dist
 dist-ssr
 *.local
-
+bin
+obj
+debug
+release
+publish
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

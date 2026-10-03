@@ -25,6 +25,11 @@ export interface ServerConfig {
 /** null = not probed yet. */
 let available: boolean | null = null
 let directory: string | null = null
+/**
+ * The server says it owns the storage (the launcher always does: the folder is
+ * chosen in its own UI). Then the page follows it without asking anything.
+ */
+let managed = false
 let maskTimer: ReturnType<typeof setTimeout> | null = null
 
 let probing: Promise<boolean> | null = null
@@ -45,8 +50,9 @@ export function probe(): Promise<boolean> {
         available = false
         return available
       }
-      const data = (await res.json()) as Partial<ServerConfig>
+      const data = (await res.json()) as Partial<ServerConfig> & { managed?: boolean }
       directory = data.dir ?? null
+      managed = data.managed === true
       available = true
     } catch {
       available = false
@@ -58,6 +64,16 @@ export function probe(): Promise<boolean> {
 
 export function isAvailable(): boolean {
   return available === true
+}
+
+/**
+ * True when the server owns the storage — the launcher, whose settings screen
+ * is where the folder is chosen. The page then uses that folder directly: it is
+ * the same folder the user just picked over there, so asking again (or falling
+ * back to a browser-side store) would only look broken.
+ */
+export function isManaged(): boolean {
+  return managed
 }
 
 /**
@@ -95,6 +111,12 @@ export function isRemoteClient(): boolean {
  * staring at an empty list with no way to fill it.
  */
 export function isEnabled(): boolean {
+  // A server that owns the storage is not a preference to be second-guessed:
+  // the folder was picked in the launcher, and either backend the page could
+  // fall back to (a folder handle it does not have, an empty IndexedDB) would
+  // just show a different, emptier list.
+  if (managed) return true
+
   const choice = loadSettings().useServerStore
   if (typeof choice === 'boolean') return choice
   return isAvailable() && getDir() !== null && isRemoteClient()
@@ -154,8 +176,9 @@ async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export async function readConfig(): Promise<ServerConfig> {
-  const data = await getJson<Partial<ServerConfig>>(`${BASE}/config`)
+  const data = await getJson<Partial<ServerConfig> & { managed?: boolean }>(`${BASE}/config`)
   directory = data.dir ?? directory
+  if (data.managed === true) managed = true
   return {
     dir: data.dir ?? null,
     combos: (data.combos as FavoriteItem[]) ?? [],

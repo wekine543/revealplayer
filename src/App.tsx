@@ -176,6 +176,15 @@ export default function App() {
       // rest of start-up talks to.
       await serverStore.probe()
       if (cancelled) return
+
+      // A page served by the launcher never asks for a folder: the folder was
+      // picked in the launcher itself, so the page uses it and nothing else.
+      if (serverStore.isManaged()) {
+        setConfigStatus('idle', serverStore.dirName(), null)
+        await applyConfig()
+        return
+      }
+
       const restored = await initConfigDir()
       if (cancelled) return
       // Someone who already declined the prompt should not be asked again on
